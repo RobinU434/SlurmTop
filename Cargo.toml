@@ -1,0 +1,20 @@
+[package]
+name = "slurmtop"
+version = "0.1.0"
+edition = "2021"
+authors = ["Robin"]
+
+[lib]
+name = "slurmtop"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[dependencies]
+ratatui = { version = "0.26", default-features = false, features = ["crossterm"] }
+crossterm = "0.27"
+color-eyre = "0.6"
+pyo3 = { version = "0.21", features = ["extension-module"], optional = true }
+sysinfo = "0.30"
