@@ -25,16 +25,25 @@ This repository currently ships only the layout scaffolding so you can learn Rus
 
 ### Key bindings
 
-| Key              | Action                                             |
-|------------------|----------------------------------------------------|
-| ↑ / ↓            | Move within the focused jobs list                  |
-| ←                | Focus the upper `Current Jobs` pane                |
-| →                | Focus the lower `Past Jobs` pane                   |
-| `c` / `g`        | Jump directly to CPU / GPU tabs                    |
-| `e` / `o` / `j`  | Jump to Error Log / Output Log / Job Script tabs   |
-| `Tab` / `Shift+Tab` | Cycle through action tabs sequentially        |
-| `?`              | Toggle the on-screen help & shortcuts overlay      |
-| `q` / `Esc`      | Quit the TUI (also closes the help overlay)        |
+| Key                 | Action                                             |
+|---------------------|----------------------------------------------------|
+| ↑ / ↓               | Move within the focused jobs list                  |
+| ←                   | Focus the upper `Current Jobs` pane                |
+| →                   | Focus the lower `Past Jobs` pane                   |
+| `c` / `g`           | Jump directly to CPU / GPU tabs                    |
+| `e` / `o` / `j`     | Jump to Error Log / Output Log / Job Script tabs   |
+| `k`                 | Connect to the selected Slurm job                  |
+| `n`                 | Launch a new interactive job using saved config    |
+| `i`                 | Open the interactive-job configuration overlay     |
+| `Tab` / `Shift+Tab` | Cycle through action tabs sequentially            |
+| `?`                 | Toggle the on-screen help & shortcuts overlay      |
+| `q` / `Esc`         | Quit the TUI (also closes the help overlay)        |
+
+### Interactive job config
+
+- Defaults live in `config/interactive_job.toml`. Adjust them manually or press `i` in the TUI to open the inline editor.
+- Launch a new interactive Slurm session (mocked locally) with `n`; the request summary pulls from the config above.
+- Press `k` while a job is highlighted to attempt a connection; finished jobs surface a notice in the inspector panel.
 
 ## Quick start
 

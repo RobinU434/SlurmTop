@@ -1,8 +1,8 @@
-use std::{cmp::Ordering, io, time::Instant};
+use std::{cmp::Ordering, fs, io, path::Path, time::Instant};
 
 use color_eyre::Result;
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -15,7 +15,10 @@ use ratatui::{
         Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, Tabs,
     },
 };
+use serde::{Deserialize, Serialize};
 use sysinfo::{Process, ProcessStatus, System};
+
+const INTERACTIVE_CONFIG_PATH: &str = "config/interactive_job.toml";
 
 pub fn run() -> Result<()> {
     color_eyre::install()?;
@@ -46,23 +49,52 @@ fn run_app<B: ratatui::backend::Backend>(
 
         if crossterm::event::poll(std::time::Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        if app.show_help {
+                if app.show_help {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
                             app.show_help = false;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                if app.config_overlay.is_open() {
+                    let should_save = app
+                        .config_overlay
+                        .handle_key(key, &mut app.interactive_config);
+                    if should_save {
+                        if let Err(err) = app.interactive_config.save_to_disk() {
+                            app.connection_status = Some(format!(
+                                "Failed to save interactive config: {}",
+                                err
+                            ));
                         } else {
-                            return Ok(());
+                            app.connection_status = Some(
+                                "Interactive job configuration updated.".into(),
+                            );
+                            app.config_overlay
+                                .sync_buffer(&app.interactive_config);
                         }
                     }
+                    continue;
+                }
+
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('?') => app.show_help = !app.show_help,
-                    _ if app.show_help => {}
                     KeyCode::Up => app.previous_job(),
                     KeyCode::Down => app.next_job(),
                     KeyCode::Left => app.focus_previous_jobs_list(),
                     KeyCode::Right => app.focus_next_jobs_list(),
                     KeyCode::Tab => app.next_action(),
                     KeyCode::BackTab => app.previous_action(),
-                    KeyCode::Char(c) => app.activate_action_by_char(c),
+                    KeyCode::Char(c) => match c.to_ascii_lowercase() {
+                        'k' => app.connect_to_job(),
+                        'n' => app.launch_interactive_job(),
+                        'i' => app.toggle_config_overlay(),
+                        _ => app.activate_action_by_char(c),
+                    },
                     _ => {}
                 }
             }
@@ -87,6 +119,10 @@ fn ui(frame: &mut Frame<'_>, app: &App) {
 
     if app.show_help {
         draw_help_overlay(frame, app);
+    }
+
+    if app.config_overlay.is_open() {
+        draw_config_overlay(frame, app);
     }
 }
 
@@ -213,6 +249,18 @@ fn draw_actions_column(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     frame.render_widget(inspector_block, column[1]);
 
+    let inspector_split = if app.connection_status.is_some() {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .split(inspector_area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(100)])
+            .split(inspector_area)
+    };
+
     let inspector_table = Table::new(
         inspector_rows
             .into_iter()
@@ -222,7 +270,19 @@ fn draw_actions_column(frame: &mut Frame<'_>, area: Rect, app: &App) {
     .column_spacing(1)
     .style(Style::default().fg(Color::Gray));
 
-    frame.render_widget(inspector_table, inspector_area);
+    frame.render_widget(inspector_table, inspector_split[0]);
+
+    if let Some(status) = &app.connection_status {
+        let status_paragraph = Paragraph::new(status.as_str())
+            .style(Style::default().fg(Color::LightCyan))
+            .wrap(ratatui::widgets::Wrap { trim: true });
+        let area = if inspector_split.len() > 1 {
+            inspector_split[1]
+        } else {
+            inspector_split[0]
+        };
+        frame.render_widget(status_paragraph, area);
+    }
 }
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect) {
@@ -252,6 +312,9 @@ fn draw_help_overlay(frame: &mut Frame<'_>, app: &App) {
         "Other controls:".into(),
         "  Tab / Shift+Tab - Cycle action tabs".into(),
         "  ? - Toggle this help".into(),
+        "  k - Connect to selected job".into(),
+        "  n - Launch interactive job".into(),
+        "  i - Configure interactive session".into(),
         "  q / Esc - Exit SlurmTop".into(),
     ]);
 
@@ -262,6 +325,62 @@ fn draw_help_overlay(frame: &mut Frame<'_>, app: &App) {
 
     frame.render_widget(Clear, area);
     frame.render_widget(help, area);
+}
+
+fn draw_config_overlay(frame: &mut Frame<'_>, app: &App) {
+    let area = centered_rect(60, 70, frame.size());
+    let fields = ConfigField::all();
+    let mut lines = Vec::new();
+    let mut cursor: Option<(u16, u16)> = None;
+
+    for (idx, field) in fields.iter().enumerate() {
+        let marker = if idx == app.config_overlay.selected {
+            if app.config_overlay.editing {
+                "✎"
+            } else {
+                "▶"
+            }
+        } else {
+            " "
+        };
+
+        let value = if app.config_overlay.editing && idx == app.config_overlay.selected {
+            app.config_overlay.buffer.clone()
+        } else {
+            field.value(&app.interactive_config)
+        };
+
+        if app.config_overlay.editing && idx == app.config_overlay.selected {
+            let value_chars = app.config_overlay.buffer.chars().count() as u16;
+            let value_offset = 16; // marker + space + 12-char label + ": "
+            let cursor_x = area.x + 1 + value_offset + value_chars;
+            let cursor_y = area.y + 1 + idx as u16;
+            cursor = Some((cursor_x, cursor_y));
+        }
+
+        lines.push(format!("{} {:<12}: {}", marker, field.title(), value));
+    }
+
+    lines.push(String::new());
+    lines.push(format!("Config file: {}", INTERACTIVE_CONFIG_PATH));
+    lines.push("Controls: Up/Down to select, Enter to edit/save, q/Esc to close".into());
+    lines.push("Type to change values, Backspace to delete".into());
+
+    if let Some(message) = &app.config_overlay.message {
+        lines.push(String::new());
+        lines.push(format!("Status: {}", message));
+    }
+
+    let body = Paragraph::new(lines.join("\n"))
+        .block(Block::default().title("Interactive Job Config").borders(Borders::ALL))
+        .wrap(ratatui::widgets::Wrap { trim: true });
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(body, area);
+
+    if let Some((x, y)) = cursor {
+        frame.set_cursor(x, y);
+    }
 }
 
 fn render_action_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -542,6 +661,251 @@ struct GpuDevice {
     process: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InteractiveJobConfig {
+    partition: String,
+    account: String,
+    time_limit: String,
+    nodes: u32,
+    gpus: u32,
+}
+
+impl Default for InteractiveJobConfig {
+    fn default() -> Self {
+        Self {
+            partition: "debug".into(),
+            account: "research".into(),
+            time_limit: "01:00:00".into(),
+            nodes: 1,
+            gpus: 1,
+        }
+    }
+}
+
+impl InteractiveJobConfig {
+    fn load_or_default() -> Self {
+        match fs::read_to_string(INTERACTIVE_CONFIG_PATH) {
+            Ok(contents) => toml::from_str(&contents).unwrap_or_else(|_| Self::default()),
+            Err(_) => {
+                let default = Self::default();
+                if let Err(err) = default.save_to_disk() {
+                    eprintln!("Failed to persist default config: {err}");
+                }
+                default
+            }
+        }
+    }
+
+    fn save_to_disk(&self) -> Result<()> {
+        if let Some(parent) = Path::new(INTERACTIVE_CONFIG_PATH).parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let serialized = toml::to_string_pretty(self)?;
+        fs::write(INTERACTIVE_CONFIG_PATH, serialized)?;
+        Ok(())
+    }
+}
+
+#[derive(Copy, Clone)]
+enum ConfigField {
+    Partition,
+    Account,
+    TimeLimit,
+    Nodes,
+    Gpus,
+}
+
+impl ConfigField {
+    fn all() -> &'static [ConfigField] {
+        use ConfigField::*;
+        const FIELDS: &[ConfigField] = &[Partition, Account, TimeLimit, Nodes, Gpus];
+        FIELDS
+    }
+
+    fn title(&self) -> &'static str {
+        match self {
+            ConfigField::Partition => "Partition",
+            ConfigField::Account => "Account",
+            ConfigField::TimeLimit => "Time Limit",
+            ConfigField::Nodes => "Nodes",
+            ConfigField::Gpus => "GPUs",
+        }
+    }
+
+    fn value(&self, config: &InteractiveJobConfig) -> String {
+        match self {
+            ConfigField::Partition => config.partition.clone(),
+            ConfigField::Account => config.account.clone(),
+            ConfigField::TimeLimit => config.time_limit.clone(),
+            ConfigField::Nodes => config.nodes.to_string(),
+            ConfigField::Gpus => config.gpus.to_string(),
+        }
+    }
+
+    fn set_value(&self, config: &mut InteractiveJobConfig, input: &str) -> Result<(), &'static str> {
+        match self {
+            ConfigField::Partition => {
+                if input.trim().is_empty() {
+                    Err("Partition cannot be empty")
+                } else {
+                    config.partition = input.trim().to_string();
+                    Ok(())
+                }
+            }
+            ConfigField::Account => {
+                if input.trim().is_empty() {
+                    Err("Account cannot be empty")
+                } else {
+                    config.account = input.trim().to_string();
+                    Ok(())
+                }
+            }
+            ConfigField::TimeLimit => {
+                if input.trim().is_empty() {
+                    Err("Time limit cannot be empty")
+                } else {
+                    config.time_limit = input.trim().to_string();
+                    Ok(())
+                }
+            }
+            ConfigField::Nodes => input
+                .trim()
+                .parse()
+                .map(|value| {
+                    config.nodes = value;
+                })
+                .map_err(|_| "Nodes must be an integer"),
+            ConfigField::Gpus => input
+                .trim()
+                .parse()
+                .map(|value| {
+                    config.gpus = value;
+                })
+                .map_err(|_| "GPUs must be an integer"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ConfigOverlayState {
+    open: bool,
+    selected: usize,
+    editing: bool,
+    buffer: String,
+    message: Option<String>,
+}
+
+impl ConfigOverlayState {
+    fn is_open(&self) -> bool {
+        self.open
+    }
+
+    fn open(&mut self, config: &InteractiveJobConfig) {
+        self.open = true;
+        self.editing = false;
+        self.message = None;
+        let fields = ConfigField::all();
+        if fields.is_empty() {
+            self.buffer.clear();
+            return;
+        }
+        self.selected = self.selected.min(fields.len() - 1);
+        self.buffer = fields[self.selected].value(config);
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+        self.editing = false;
+        self.message = None;
+        self.buffer.clear();
+    }
+
+    fn sync_buffer(&mut self, config: &InteractiveJobConfig) {
+        let fields = ConfigField::all();
+        if fields.is_empty() {
+            return;
+        }
+        let max_index = fields.len() - 1;
+        self.selected = self.selected.min(max_index);
+        self.buffer = fields[self.selected].value(config);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, config: &mut InteractiveJobConfig) -> bool {
+        if !self.open || ConfigField::all().is_empty() {
+            return false;
+        }
+
+        let fields = ConfigField::all();
+        let len = fields.len();
+        let mut save_needed = false;
+
+        match key.code {
+            KeyCode::Up => {
+                if !self.editing {
+                    self.selected = if self.selected == 0 {
+                        len - 1
+                    } else {
+                        self.selected - 1
+                    };
+                    self.buffer = fields[self.selected].value(config);
+                    self.message = None;
+                }
+            }
+            KeyCode::Down => {
+                if !self.editing {
+                    self.selected = (self.selected + 1) % len;
+                    self.buffer = fields[self.selected].value(config);
+                    self.message = None;
+                }
+            }
+            KeyCode::Enter => {
+                if self.editing {
+                    match fields[self.selected].set_value(config, &self.buffer) {
+                        Ok(()) => {
+                            self.editing = false;
+                            self.message = Some(format!(
+                                "Updated {}",
+                                fields[self.selected].title()
+                            ));
+                            self.buffer = fields[self.selected].value(config);
+                            save_needed = true;
+                        }
+                        Err(err) => {
+                            self.message = Some(format!("Error: {err}"));
+                        }
+                    }
+                } else {
+                    self.editing = true;
+                    self.buffer = fields[self.selected].value(config);
+                    self.message = Some("Editing — type new value and press Enter".into());
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if self.editing {
+                    self.editing = false;
+                    self.buffer = fields[self.selected].value(config);
+                    self.message = Some("Edit cancelled".into());
+                } else {
+                    self.close();
+                }
+            }
+            KeyCode::Backspace => {
+                if self.editing {
+                    self.buffer.pop();
+                }
+            }
+            KeyCode::Char(ch) => {
+                if self.editing {
+                    self.buffer.push(ch);
+                }
+            }
+            _ => {}
+        }
+
+        save_needed
+    }
+}
+
 struct App {
     current_jobs: Vec<Job>,
     past_jobs: Vec<Job>,
@@ -555,6 +919,9 @@ struct App {
     gpu: GpuPane,
     last_metrics_update: Instant,
     show_help: bool,
+    connection_status: Option<String>,
+    interactive_config: InteractiveJobConfig,
+    config_overlay: ConfigOverlayState,
 }
 
 impl App {
@@ -743,6 +1110,37 @@ impl App {
             .collect()
     }
 
+    fn connect_to_job(&mut self) {
+        let job = self.focused_job();
+        if matches!(job.state, "RUNNING" | "PENDING") {
+            self.connection_status = Some(format!(
+                "Connecting to job #{}, user {} on nodes {}...",
+                job.id, job.user, job.nodes
+            ));
+        } else {
+            self.connection_status = Some(format!(
+                "Job #{} is {} — connection redirected to inspector.",
+                job.id, job.state
+            ));
+        }
+    }
+
+    fn launch_interactive_job(&mut self) {
+        let cfg = &self.interactive_config;
+        self.connection_status = Some(format!(
+            "Launching interactive job on partition '{}' (nodes={}, gpus={}) for {}...",
+            cfg.partition, cfg.nodes, cfg.gpus, cfg.time_limit
+        ));
+    }
+
+    fn toggle_config_overlay(&mut self) {
+        if self.config_overlay.is_open() {
+            self.config_overlay.close();
+        } else {
+            self.config_overlay.open(&self.interactive_config);
+        }
+    }
+
     fn refresh_metrics(&mut self) {
         if self
             .last_metrics_update
@@ -769,6 +1167,9 @@ impl Default for App {
         system.refresh_all();
         let cpu = CpuPane::from_system(&system);
         let gpu = GpuPane::mock();
+        let interactive_config = InteractiveJobConfig::load_or_default();
+        let mut config_overlay = ConfigOverlayState::default();
+        config_overlay.sync_buffer(&interactive_config);
         Self {
             current_jobs,
             past_jobs,
@@ -782,6 +1183,9 @@ impl Default for App {
             gpu,
             last_metrics_update: Instant::now(),
             show_help: false,
+            connection_status: None,
+            interactive_config,
+            config_overlay,
         }
     }
 }
