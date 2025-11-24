@@ -1,32 +1,33 @@
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
 
 [project]
 name = "slurmtop"
-version = "0.1.0"
-description = "Terminal UI for Slurm job monitoring (Rust-powered)."
+version = "0.2.0"
+description = "Terminal UI for Slurm job monitoring (pure Python/Textual)."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
     { name = "Robin", email = "root@example.com" },
 ]
-keywords = ["slurm", "tui", "term", "rust"]
+keywords = ["slurm", "tui", "textual", "terminal"]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Environment :: Console",
+    "Environment :: Console :: Curses",
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "textual>=0.45",
+    "psutil>=5.9",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.scripts]
 slurmtop = "slurmtop:main"
 
-[tool.maturin]
-bindings = "pyo3"
-python-source = "python"
-module-name = "slurmtop._slurmtop"
-features = ["python"]
-strip = true
+[tool.hatch.build.targets.wheel]
+packages = ["slurmtop"]

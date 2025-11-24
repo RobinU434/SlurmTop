@@ -1,4 +1,4 @@
-"""Module entrypoint so ``python -m slurmtop`` works."""
+from __future__ import annotations
 
 from . import main
 

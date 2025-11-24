@@ -1,0 +1,43 @@
+Screen {
+    layout: vertical;
+}
+
+#body {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#jobs-column,
+#actions-column {
+    padding: 1;
+}
+
+#jobs-column {
+    width: 1fr;
+    border-right: solid gray;
+    height: 1fr;
+}
+
+#actions-column {
+    width: 1.2fr;
+    height: 1fr;
+    padding-left: 2;
+}
+
+ListView {
+    height: 1fr;
+    border: solid #444444;
+    margin-bottom: 1;
+}
+
+#inspector,
+#status,
+#script-view {
+    border: solid #333333;
+    padding: 1;
+}
+
+#status {
+    min-height: 1;
+    margin-top: 1;
+}

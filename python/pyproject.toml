@@ -1,5 +1,0 @@
-## Legacy stub
-#
-# The real packaging configuration now lives in the repository root
-# (`pyproject.toml`). This placeholder remains only so older instructions
-# pointing at `python/pyproject.toml` still find a helpful message.
