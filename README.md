@@ -28,11 +28,14 @@ This repository currently ships mocked data plus local host metrics (via `psutil
 | Key        | Action                                                          |
 |------------|-----------------------------------------------------------------|
 | Arrow keys | Navigate the `Current` / `Past` job lists                       |
-| `Tab`      | Move focus between widgets (Textual default)                    |
+| `Tab`      | Toggle focus between `Current` and `Past` job lists             |
+| `1` – `5`  | Switch to CPU, GPU, Error Log, Output Log, or Job Script tabs   |
 | `k`        | Connect to the highlighted job (mock connection message)        |
+| `h`        | Hook into the selected running job via `srun --jobid`           |
 | `n`        | Launch a mocked interactive job using `config/interactive_job.toml` |
 | `r`        | Force-refresh local CPU metrics                                 |
 | `q`        | Quit the application                                            |
+| `?`        | Show the in-app shortcut reference overlay                      |
 
 ### Interactive job config
 

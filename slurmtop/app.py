@@ -155,21 +155,15 @@ class HelpScreen(ModalScreen[None]):
         Binding("q", "dismiss", "Close"),
     ]
 
-    def compose(self) -> ComposeResult:  # pragma: no cover - UI composition
-        shortcuts = [
-            ("Arrow keys", "Navigate Current/Past job lists"),
-            ("Tab", "Cycle focus between widgets"),
-            ("k", "Connect to selected job"),
-            ("n", "Launch interactive job request"),
-            ("r", "Refresh CPU metrics"),
-            ("q", "Quit SlurmTop"),
-            ("?", "Show this shortcuts overlay"),
-        ]
+    def __init__(self, shortcuts: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self.shortcuts = shortcuts
 
+    def compose(self) -> ComposeResult:  # pragma: no cover - UI composition
         table = Table.grid(padding=(0, 2))
         table.add_column("Shortcut", style="bold cyan")
         table.add_column("Description", style="white")
-        for key, description in shortcuts:
+        for key, description in self.shortcuts:
             table.add_row(key, description)
 
         yield Static(Panel(table, title="SlurmTop Shortcuts"), id="help-panel")
@@ -185,10 +179,18 @@ class SlurmTopApp(App[None]):
     TITLE = "SlurmTop"
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("k", "connect_job", "Connect"),
-        Binding("n", "launch_interactive", "Interactive"),
-        Binding("r", "refresh_metrics", "Refresh Metrics"),
         Binding("?", "show_help", "Help"),
+        Binding("k", "connect_job", "Connect", show=False),
+        Binding("h", "hook_job", "Hook Job", show=False),
+        Binding("n", "launch_interactive", "Interactive", show=False),
+        Binding("r", "refresh_metrics", "Refresh", show=False),
+        Binding("1", "show_cpu_tab", "CPU", show=False),
+        Binding("2", "show_gpu_tab", "GPU", show=False),
+        Binding("3", "show_error_tab", "Error Log", show=False),
+        Binding("4", "show_output_tab", "Output Log", show=False),
+        Binding("5", "show_script_tab", "Job Script", show=False),
+        Binding("tab", "cycle_job_lists", "Switch List", priority=True, show=False),
+        Binding("shift+tab", "cycle_job_lists", "Switch List", priority=True, show=False),
     ]
 
     selected_job: reactive[Optional[Job]] = reactive(None)
@@ -199,41 +201,64 @@ class SlurmTopApp(App[None]):
         self.past_jobs = list(past_jobs or DEFAULT_PAST_JOBS)
         self._focused_list = "current"
         self._interactive_config = load_interactive_config()
+        self.tabs: TabbedContent | None = None
+        self.tab_title: Label | None = None
+        self.current_list: ListView | None = None
+        self.past_list: ListView | None = None
+        self._tab_titles = {
+            "tab-cpu": "CPU",
+            "tab-gpu": "GPU",
+            "tab-error": "Error Log",
+            "tab-output": "Output Log",
+            "tab-script": "Job Script",
+        }
 
     def compose(self) -> ComposeResult:  # pragma: no cover - Textual hook
         yield Header(show_clock=True)
         with Horizontal(id="body"):
             with Vertical(id="jobs-column"):
                 yield Label("Current Jobs", id="current-label")
-                yield ListView(*[JobListItem(job) for job in self.current_jobs], id="current-jobs")
+                self.current_list = ListView(
+                    *[JobListItem(job) for job in self.current_jobs],
+                    id="current-jobs",
+                )
+                yield self.current_list
                 yield Label("Past Jobs", id="past-label")
-                yield ListView(*[JobListItem(job) for job in self.past_jobs], id="past-jobs")
+                self.past_list = ListView(
+                    *[JobListItem(job) for job in self.past_jobs],
+                    id="past-jobs",
+                )
+                yield self.past_list
             with Vertical(id="actions-column"):
                 self.cpu_pane = CpuPane()
                 self.gpu_pane = GpuPane()
                 self.error_log = Log(highlight=True, name="error-log")
                 self.output_log = Log(highlight=True, name="output-log")
                 self.script_view = Static(_sample_script(), id="script-view")
-
-                with TabbedContent(id="actions-tabs"):
-                    yield TabPane("CPU", self.cpu_pane)
-                    yield TabPane("GPU", self.gpu_pane)
-                    yield TabPane("Error Log", self.error_log)
-                    yield TabPane("Output Log", self.output_log)
-                    yield TabPane("Job Script", self.script_view)
-                yield Label("Job Inspector", id="inspector-label")
-                yield Static("Select a job to inspect", id="inspector")
+                self.tab_title = Label(self._tab_titles["tab-cpu"], id="tab-title")
+                yield self.tab_title
+                self.tabs = TabbedContent(id="actions-tabs", initial="tab-cpu")
+                with self.tabs:
+                    yield TabPane("CPU", self.cpu_pane, id="tab-cpu")
+                    yield TabPane("GPU", self.gpu_pane, id="tab-gpu")
+                    yield TabPane("Error Log", self.error_log, id="tab-error")
+                    yield TabPane("Output Log", self.output_log, id="tab-output")
+                    yield TabPane("Job Script", self.script_view, id="tab-script")
                 yield Static("", id="status")
+                with Vertical(id="inspector-panel"):
+                    yield Label("Job Inspector", id="inspector-label")
+                    yield Static("Select a job to inspect", id="inspector")
         yield Footer()
 
     def on_mount(self) -> None:  # pragma: no cover - Textual hook
-        current_list = self.query_one("#current-jobs", ListView)
+        current_list = self.current_list or self.query_one("#current-jobs", ListView)
         if current_list.children:
             current_list.index = 0
             first = current_list.children[0]
             if isinstance(first, JobListItem):
                 self.selected_job = first.job
                 self.update_inspector()
+        self._focus_job_list("current")
         self.error_log.write("stderr tail unavailable (placeholder)")
         self.output_log.write("stdout tail unavailable (placeholder)")
 
@@ -267,7 +292,27 @@ class SlurmTopApp(App[None]):
         self.set_status("Metrics refreshed")
 
     def action_show_help(self) -> None:
-        self.push_screen(HelpScreen())
+        self.push_screen(HelpScreen(self._shortcut_entries()))
+
+    def action_cycle_job_lists(self) -> None:
+        target = "past" if self._focused_list == "current" else "current"
+        self._focused_list = target
+        self._focus_job_list(target)
+
+    def action_show_cpu_tab(self) -> None:
+        self._show_tab("tab-cpu")
+
+    def action_show_gpu_tab(self) -> None:
+        self._show_tab("tab-gpu")
+
+    def action_show_error_tab(self) -> None:
+        self._show_tab("tab-error")
+
+    def action_show_output_tab(self) -> None:
+        self._show_tab("tab-output")
+
+    def action_show_script_tab(self) -> None:
+        self._show_tab("tab-script")
 
     def action_connect_job(self) -> None:
         job = self.selected_job
@@ -278,6 +323,18 @@ class SlurmTopApp(App[None]):
             self.set_status(f"Job #{job.job_id} already {job.state.lower()}; showing details instead")
         else:
             self.set_status(f"Connecting to job #{job.job_id} on {job.nodes} as {job.user}…")
+
+    def action_hook_job(self) -> None:
+        job = self.selected_job
+        if job is None:
+            self.set_status("Select a job before hooking into it")
+            return
+        if job.state.upper() != "RUNNING":
+            self.set_status(f"Job #{job.job_id} is {job.state.lower()}; wait until it is running")
+            return
+        command = f"srun --jobid {job.job_id} --pty bash"
+        self.output_log.write(f"$ {command}")
+        self.set_status(f"Hooking into job #{job.job_id}: {command}")
 
     def action_launch_interactive(self) -> None:
         cfg = self._interactive_config
@@ -290,11 +347,56 @@ class SlurmTopApp(App[None]):
         if isinstance(event.item, JobListItem):
             self.selected_job = event.item.job
             self._focused_list = "current" if event.list_view.id == "current-jobs" else "past"
+            self._focus_job_list(self._focused_list)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, JobListItem):
             self.selected_job = event.item.job
             self._focused_list = "current" if event.list_view.id == "current-jobs" else "past"
+            self._focus_job_list(self._focused_list)
+
+    def _show_tab(self, tab_id: str) -> None:
+        if self.tabs is not None:
+            self.tabs.active = tab_id
+            self._update_tab_header(tab_id)
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        if event.tabbed_content is self.tabs and event.pane.id:
+            self._update_tab_header(event.pane.id)
+
+    def _focus_job_list(self, target: Optional[str] = None) -> None:
+        target = target or self._focused_list
+        if target not in {"current", "past"}:
+            return
+        list_view = self.current_list if target == "current" else self.past_list
+        if list_view is None or not list_view.children:
+            return
+        if list_view.index is None:
+            list_view.index = 0
+        self.set_focus(list_view)
+
+    def _update_tab_header(self, tab_id: str) -> None:
+        if self.tab_title is None:
+            return
+        label = self._tab_titles.get(tab_id, tab_id)
+        self.tab_title.update(label)
+
+    def _shortcut_entries(self) -> list[tuple[str, str]]:
+        return [
+            ("Arrow keys", "Navigate Current/Past job lists"),
+            ("Tab", "Toggle between Current and Past job lists"),
+            ("1", "Show CPU metrics"),
+            ("2", "Show GPU metrics"),
+            ("3", "Show error log"),
+            ("4", "Show output log"),
+            ("5", "Show job script"),
+            ("k", "Connect to selected job"),
+            ("h", "Hook into selected job via srun"),
+            ("n", "Launch interactive job request"),
+            ("r", "Refresh CPU metrics"),
+            ("?", "Show shortcuts overlay"),
+            ("q", "Quit SlurmTop"),
+        ]
 
 
 def _sample_processes(limit: int = 5) -> list[dict[str, object]]:
