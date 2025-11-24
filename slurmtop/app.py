@@ -22,6 +22,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Label, ListItem, ListView, Log, Static, TabPane, TabbedContent
 
 CONFIG_PATH = Path("config/interactive_job.toml")
@@ -146,6 +147,36 @@ class GpuPane(Static):
 
         self.update(table)
 
+class HelpScreen(ModalScreen[None]):
+    """Modal overlay showing all keyboard shortcuts."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+        Binding("q", "dismiss", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:  # pragma: no cover - UI composition
+        shortcuts = [
+            ("Arrow keys", "Navigate Current/Past job lists"),
+            ("Tab", "Cycle focus between widgets"),
+            ("k", "Connect to selected job"),
+            ("n", "Launch interactive job request"),
+            ("r", "Refresh CPU metrics"),
+            ("q", "Quit SlurmTop"),
+            ("?", "Show this shortcuts overlay"),
+        ]
+
+        table = Table.grid(padding=(0, 2))
+        table.add_column("Shortcut", style="bold cyan")
+        table.add_column("Description", style="white")
+        for key, description in shortcuts:
+            table.add_row(key, description)
+
+        yield Static(Panel(table, title="SlurmTop Shortcuts"), id="help-panel")
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
 
 class SlurmTopApp(App[None]):
     """Textual application that mirrors the original Rust layout."""
@@ -157,6 +188,7 @@ class SlurmTopApp(App[None]):
         Binding("k", "connect_job", "Connect"),
         Binding("n", "launch_interactive", "Interactive"),
         Binding("r", "refresh_metrics", "Refresh Metrics"),
+        Binding("?", "show_help", "Help"),
     ]
 
     selected_job: reactive[Optional[Job]] = reactive(None)
@@ -233,6 +265,9 @@ class SlurmTopApp(App[None]):
     def action_refresh_metrics(self) -> None:
         self.cpu_pane.update_metrics()
         self.set_status("Metrics refreshed")
+
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     def action_connect_job(self) -> None:
         job = self.selected_job

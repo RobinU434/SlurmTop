@@ -41,3 +41,9 @@ ListView {
     min-height: 1;
     margin-top: 1;
 }
+
+#help-panel {
+    border: solid #444444;
+    padding: 1;
+    background: #111111;
+}
