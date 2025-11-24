@@ -53,7 +53,7 @@ This repository currently ships only the layout scaffolding so you can learn Rus
 	curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf | sh
 	```
 
-	Then run `source "$HOME/.cargo/env"` (or restart the shell) so `cargo` is on your `PATH`.
+	Then run `source "$WORK/.cargo/env"` (or restart the shell) so `cargo` is on your `PATH`.
 
 2. **Install project dependencies and run the TUI:**
 
@@ -79,6 +79,98 @@ This repository currently ships only the layout scaffolding so you can learn Rus
 	```
 
 	To publish a wheel, run `maturin build --release --features python` and upload the generated files under `target/wheels/`.
+
+	### Filter the displayed jobs
+
+	By default SlurmTop now shows **only your own jobs** so the `Current Jobs` pane stays relevant even on crowded clusters. The username is resolved (in order) from `$SLURMTOP_USER`, `$SLURM_JOB_USER`, `$USER`, `$LOGNAME`, and finally `id -un`, so even stripped-down environments still pick the right account. You can override or extend the filter explicitly:
+
+	```bash
+	# Force SlurmTop to show a specific account (comma-separated list allowed)
+	export SLURMTOP_USER=project-account,shared-service
+
+	# Or show every job on the cluster (disables filtering entirely)
+	export SLURMTOP_ALL_JOBS=1
+	```
+
+	Set one of these variables in the shell before launching `slurmtop` (or add them to your `.bashrc`/job wrapper) to tailor the sidebar to your workflow.
+
+## Building with Singularity (cluster-friendly)
+
+When login nodes lack a Rust toolchain, build SlurmTop inside the provided Singularity image. The container is based on Debian 10 (glibc 2.28) so the resulting binaries and wheels can run on the cluster hosts, but it **does not** include Slurm CLI utilities—keep using the host environment for actually talking to the scheduler.
+
+1. **Build or update the image** (needs Singularity/Apptainer with `--fakeroot` support):
+
+	```bash
+	cd /home/robin/projects/SlurmTop
+	singularity build --fakeroot container/SlurmTop.sif container/SlurmTop.def
+	```
+
+2. **Run cargo inside the container** while binding the repo and pointing `CARGO_HOME` at a writable path (on the host).
+
+	```bash
+	mkdir -p .cargo  # once per repo clone
+
+	singularity exec \
+	  --bind $(pwd):/workspace \
+	  --pwd /workspace \
+	  --env CARGO_HOME=/workspace/.cargo \
+	  container/SlurmTop.sif \
+	  cargo build --release
+	```
+
+	> **Why override `CARGO_HOME`?** The preinstalled Rust toolchain lives under `/opt/rust`, which is read-only inside the SIF. Sending Cargo's caches to `/workspace/.cargo` keeps all writes on the host filesystem and avoids “Read-only file system” errors.
+
+3. **Build a manylinux_2_28 wheel that matches the cluster's glibc (and Python 3.12 conda env).** Bind the external conda root so the container can reach your interpreter:
+
+	```bash
+	CONDA_ROOT=/mnt/lustre/work/martius/mot824/.conda
+	PY_ENV=$CONDA_ROOT/envs/slurmtop
+
+	singularity exec \
+	  --bind $(pwd):/workspace \
+	  --bind ${CONDA_ROOT}:${CONDA_ROOT} \
+	  --pwd /workspace \
+	  --env CARGO_HOME=/workspace/.cargo \
+	  container/SlurmTop.sif \
+	  maturin build --release --features python \
+	    --interpreter ${PY_ENV}/bin/python \
+	    --compatibility manylinux_2_28
+	```
+
+	The resulting wheel lands in `target/wheels/` with a tag like `cp312-cp312-manylinux_2_28_x86_64`.
+
+4. **Install the wheel _outside_ the container** (so it uses the real environment's site-packages):
+
+	```bash
+	${PY_ENV}/bin/pip install --force-reinstall target/wheels/slurmtop-0.1.0-cp312-cp312-manylinux_2_28_x86_64.whl
+	```
+
+	Optionally sanity-check the import:
+
+	```bash
+	${PY_ENV}/bin/python -c "import slurmtop; print('slurmtop import ok')"
+	```
+
+The image still ships helper scripts under `/usr/local/bin` (`slurmtop-python-build` / `slurmtop-python-run`) for quick smoke tests inside the container, but the recommended workflow for cluster installs is to build wheels via Singularity and install them directly into your external conda environment.
+
+## Submitting a build via sbatch
+
+Automate container builds on a compute node with `scripts/build_slurmtop.sbatch`:
+
+```bash
+cd /home/robin/projects/SlurmTop
+sbatch scripts/build_slurmtop.sbatch
+```
+
+Environment variables you can override when calling `sbatch`:
+
+- `SLURMTOP_REPO` – path to the repo (defaults to `PWD`).
+- `SLURMTOP_DEF` – Singularity definition file (defaults to `container/SlurmTop.def`).
+- `SLURMTOP_SIF` – destination of the built image.
+- `SLURMTOP_LOG_DIR` – directory for job logs (defaults to `logs/`).
+- `SLURMTOP_PY_BUILD` – set to `1` to run `slurmtop-python-build` after the Rust build completes.
+
+Edit the `#SBATCH` directives in the script to match your partition/time/memory requirements. The script reuses an existing image if present, rebuilding only when missing, and keeps Slurm CLI access by binding `/etc/slurm` into the container.
 
 ## Project structure
 

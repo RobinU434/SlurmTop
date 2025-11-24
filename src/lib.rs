@@ -1,4 +1,9 @@
-use std::{cmp::Ordering, fs, io, path::Path, time::Instant};
+use std::{
+    cmp::Ordering,
+    fs, io,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use color_eyre::Result;
 use crossterm::{
@@ -18,7 +23,12 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 use sysinfo::{Process, ProcessStatus, System};
 
+mod slurm;
+
+use slurm::{Job, JobDetails, SlurmBackend, SlurmSnapshot};
+
 const INTERACTIVE_CONFIG_PATH: &str = "config/interactive_job.toml";
+const JOB_DETAILS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub fn run() -> Result<()> {
     color_eyre::install()?;
@@ -39,11 +49,10 @@ pub fn run() -> Result<()> {
     res
 }
 
-fn run_app<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> Result<()> {
+fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
+        app.refresh_jobs();
+        app.refresh_job_details();
         app.refresh_metrics();
         terminal.draw(|f| ui(f, app))?;
 
@@ -65,16 +74,12 @@ fn run_app<B: ratatui::backend::Backend>(
                         .handle_key(key, &mut app.interactive_config);
                     if should_save {
                         if let Err(err) = app.interactive_config.save_to_disk() {
-                            app.connection_status = Some(format!(
-                                "Failed to save interactive config: {}",
-                                err
-                            ));
+                            app.connection_status =
+                                Some(format!("Failed to save interactive config: {}", err));
                         } else {
-                            app.connection_status = Some(
-                                "Interactive job configuration updated.".into(),
-                            );
-                            app.config_overlay
-                                .sync_buffer(&app.interactive_config);
+                            app.connection_status =
+                                Some("Interactive job configuration updated.".into());
+                            app.config_overlay.sync_buffer(&app.interactive_config);
                         }
                     }
                     continue;
@@ -154,7 +159,9 @@ fn draw_jobs_column(frame: &mut Frame<'_>, area: Rect, app: &App) {
         past_state.select(Some(app.selected_past.min(app.past_jobs.len() - 1)));
     }
 
-    let highlight = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let highlight = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
 
     let current_block_style = if matches!(app.focused_jobs, JobsListFocus::Current) {
         Style::default().fg(Color::Yellow)
@@ -232,20 +239,40 @@ fn draw_actions_column(frame: &mut Frame<'_>, area: Rect, app: &App) {
         vertical: 1,
     });
 
-    let job = app.focused_job();
-    let inspector_rows = [[
-        format!("JobID: {}", job.id),
-        format!("User: {}", job.user),
-    ], [
-        format!("State: {}", job.state),
-        format!("Nodes: {}", job.nodes),
-    ], [
-        format!("Submit: {}", job.submitted),
-        format!("Runtime: {}", job.runtime),
-    ], [
-        format!("Workdir: {}", job.workdir),
-        format!("Reason: {}", job.reason),
-    ]];
+    let (job_id, user, state, nodes, submitted, runtime, workdir, reason) =
+        if let Some(job) = app.focused_job() {
+            (
+                job.id.clone(),
+                job.user.clone(),
+                job.state.clone(),
+                job.nodes.clone(),
+                job.submitted.clone(),
+                job.runtime.clone(),
+                job.workdir.clone(),
+                job.reason.clone(),
+            )
+        } else {
+            (
+                "-".into(),
+                "-".into(),
+                "-".into(),
+                "-".into(),
+                "-".into(),
+                "-".into(),
+                "-".into(),
+                "No jobs returned from Slurm".into(),
+            )
+        };
+
+    let inspector_rows = [
+        [format!("JobID: {job_id}"), format!("User: {user}")],
+        [format!("State: {state}"), format!("Nodes: {nodes}")],
+        [
+            format!("Submit: {submitted}"),
+            format!("Runtime: {runtime}"),
+        ],
+        [format!("Workdir: {workdir}"), format!("Reason: {reason}")],
+    ];
 
     frame.render_widget(inspector_block, column[1]);
 
@@ -372,7 +399,11 @@ fn draw_config_overlay(frame: &mut Frame<'_>, app: &App) {
     }
 
     let body = Paragraph::new(lines.join("\n"))
-        .block(Block::default().title("Interactive Job Config").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title("Interactive Job Config")
+                .borders(Borders::ALL),
+        )
         .wrap(ratatui::widgets::Wrap { trim: true });
 
     frame.render_widget(Clear, area);
@@ -384,15 +415,16 @@ fn draw_config_overlay(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_action_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    match &app.current_action().content {
+    match app.current_action().content {
         PaneContent::Text(body) => {
-            let action_body = Paragraph::new(*body)
+            let action_body = Paragraph::new(body)
                 .block(Block::default().title("Pane Preview").borders(Borders::ALL))
                 .wrap(ratatui::widgets::Wrap { trim: true });
             frame.render_widget(action_body, area);
         }
         PaneContent::Cpu => render_cpu_pane(frame, area, &app.cpu),
         PaneContent::Gpu => render_gpu_pane(frame, area, &app.gpu),
+        PaneContent::Job(kind) => render_job_pane(frame, area, app, kind),
     }
 }
 
@@ -414,8 +446,11 @@ fn render_cpu_pane(frame: &mut Frame<'_>, area: Rect, cpu: &CpuPane) {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let summary = Paragraph::new(summary_text)
-        .block(Block::default().title("System Summary").borders(Borders::ALL));
+    let summary = Paragraph::new(summary_text).block(
+        Block::default()
+            .title("System Summary")
+            .borders(Borders::ALL),
+    );
     frame.render_widget(summary, chunks[0]);
 
     let core_items: Vec<ListItem> = cpu
@@ -427,8 +462,11 @@ fn render_cpu_pane(frame: &mut Frame<'_>, area: Rect, cpu: &CpuPane) {
         })
         .collect();
 
-    let cores = List::new(core_items)
-        .block(Block::default().title("Per-core load").borders(Borders::ALL));
+    let cores = List::new(core_items).block(
+        Block::default()
+            .title("Per-core load")
+            .borders(Borders::ALL),
+    );
     frame.render_widget(cores, chunks[1]);
 
     let rows = cpu.tasks.iter().map(|task| {
@@ -453,9 +491,10 @@ fn render_cpu_pane(frame: &mut Frame<'_>, area: Rect, cpu: &CpuPane) {
             Constraint::Percentage(100),
         ],
     )
-    .header(Row::new(vec!["PID", "USER", "%CPU", "%MEM", "TIME+", "Command"]).style(
-        Style::default().add_modifier(Modifier::BOLD),
-    ))
+    .header(
+        Row::new(vec!["PID", "USER", "%CPU", "%MEM", "TIME+", "Command"])
+            .style(Style::default().add_modifier(Modifier::BOLD)),
+    )
     .block(Block::default().title("Top tasks").borders(Borders::ALL))
     .column_spacing(1);
 
@@ -496,20 +535,69 @@ fn render_gpu_pane(frame: &mut Frame<'_>, area: Rect, gpu: &GpuPane) {
             Constraint::Percentage(100),
         ],
     )
-    .header(Row::new(vec![
-        "GPU",
-        "Temp",
-        "GPU%",
-        "Mem%",
-        "Fan",
-        "VRAM",
-        "Process",
-    ])
-    .style(Style::default().add_modifier(Modifier::BOLD)))
+    .header(
+        Row::new(vec![
+            "GPU", "Temp", "GPU%", "Mem%", "Fan", "VRAM", "Process",
+        ])
+        .style(Style::default().add_modifier(Modifier::BOLD)),
+    )
     .block(Block::default().title("Devices").borders(Borders::ALL))
     .column_spacing(1);
 
     frame.render_widget(table, chunks[1]);
+}
+
+fn render_job_pane(frame: &mut Frame<'_>, area: Rect, app: &App, kind: JobPaneKind) {
+    let title = kind.title();
+    let body = if let Some(job) = app.focused_job() {
+        if let Some(details) = &app.job_details {
+            if details.job_id == job.id {
+                format_job_detail_body(job, details, kind)
+            } else {
+                format!("Collecting details for job #{} ({})…", job.id, job.name)
+            }
+        } else if let Some(err) = &app.job_details_error {
+            format!("Job #{} ({})\n{err}", job.id, job.name)
+        } else {
+            format!("Collecting details for job #{} ({})…", job.id, job.name)
+        }
+    } else {
+        "Select a job from Current Jobs to view details.".into()
+    };
+
+    let paragraph = Paragraph::new(body)
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn format_job_detail_body(job: &Job, details: &JobDetails, kind: JobPaneKind) -> String {
+    match kind {
+        JobPaneKind::Scontrol => format!(
+            "Job #{} ({})\nscontrol show jobid -dd {}\n\n{}",
+            job.id, job.name, job.id, details.scontrol
+        ),
+        JobPaneKind::ErrorLog => {
+            format_log_section("stderr", &details.stderr_path, &details.stderr_preview, job)
+        }
+        JobPaneKind::OutputLog => {
+            format_log_section("stdout", &details.stdout_path, &details.stdout_preview, job)
+        }
+        JobPaneKind::JobScript => {
+            format_log_section("script", &details.script_path, &details.script_preview, job)
+        }
+    }
+}
+
+fn format_log_section(label: &str, path: &Option<String>, preview: &str, job: &Job) -> String {
+    let header = match path {
+        Some(p) => format!("{} file: {}", label.to_ascii_uppercase(), p),
+        None => format!(
+            "{} file: (not provided by Slurm)",
+            label.to_ascii_uppercase()
+        ),
+    };
+    format!("Job #{} ({})\n{}\n\n{}", job.id, job.name, header, preview)
 }
 
 fn usage_bar(percent: u16, width: usize) -> String {
@@ -584,19 +672,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-#[derive(Debug, Clone)]
-struct Job {
-    id: &'static str,
-    name: &'static str,
-    state: &'static str,
-    user: &'static str,
-    submitted: &'static str,
-    runtime: &'static str,
-    nodes: &'static str,
-    workdir: &'static str,
-    reason: &'static str,
-}
-
 struct ActionPane {
     title: &'static str,
     shortcut: Option<char>,
@@ -613,10 +688,31 @@ impl ActionPane {
     }
 }
 
+#[derive(Copy, Clone)]
 enum PaneContent {
     Text(&'static str),
     Cpu,
     Gpu,
+    Job(JobPaneKind),
+}
+
+#[derive(Copy, Clone)]
+enum JobPaneKind {
+    Scontrol,
+    ErrorLog,
+    OutputLog,
+    JobScript,
+}
+
+impl JobPaneKind {
+    fn title(&self) -> &'static str {
+        match self {
+            JobPaneKind::Scontrol => "scontrol",
+            JobPaneKind::ErrorLog => "Error Log",
+            JobPaneKind::OutputLog => "Output Log",
+            JobPaneKind::JobScript => "Job Script",
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -742,7 +838,11 @@ impl ConfigField {
         }
     }
 
-    fn set_value(&self, config: &mut InteractiveJobConfig, input: &str) -> Result<(), &'static str> {
+    fn set_value(
+        &self,
+        config: &mut InteractiveJobConfig,
+        input: &str,
+    ) -> Result<(), &'static str> {
         match self {
             ConfigField::Partition => {
                 if input.trim().is_empty() {
@@ -863,10 +963,8 @@ impl ConfigOverlayState {
                     match fields[self.selected].set_value(config, &self.buffer) {
                         Ok(()) => {
                             self.editing = false;
-                            self.message = Some(format!(
-                                "Updated {}",
-                                fields[self.selected].title()
-                            ));
+                            self.message =
+                                Some(format!("Updated {}", fields[self.selected].title()));
                             self.buffer = fields[self.selected].value(config);
                             save_needed = true;
                         }
@@ -922,63 +1020,14 @@ struct App {
     connection_status: Option<String>,
     interactive_config: InteractiveJobConfig,
     config_overlay: ConfigOverlayState,
+    job_backend: SlurmBackend,
+    job_details: Option<JobDetails>,
+    job_details_job_id: Option<String>,
+    job_details_last_fetch: Option<Instant>,
+    job_details_error: Option<String>,
 }
 
 impl App {
-    fn default_jobs() -> (Vec<Job>, Vec<Job>) {
-        let current = vec![
-            Job {
-                id: "581939",
-                name: "deep-learning",
-                state: "RUNNING",
-                user: "alice",
-                submitted: "2025-11-15T14:22",
-                runtime: "02:13:11",
-                nodes: "gpu[7-8]",
-                workdir: "/scratch/alice",
-                reason: "Scaling to 4 GPUs",
-            },
-            Job {
-                id: "581940",
-                name: "preprocess",
-                state: "PENDING",
-                user: "bob",
-                submitted: "2025-11-16T09:03",
-                runtime: "--",
-                nodes: "cpu[1-2]",
-                workdir: "/scratch/bob",
-                reason: "Priority hold",
-            },
-        ];
-
-        let past = vec![
-            Job {
-                id: "581901",
-                name: "render",
-                state: "COMPLETED",
-                user: "carol",
-                submitted: "2025-11-14T11:01",
-                runtime: "00:43:08",
-                nodes: "cpu[3-4]",
-                workdir: "/proj/render",
-                reason: "Finished successfully",
-            },
-            Job {
-                id: "581875",
-                name: "simulation",
-                state: "FAILED",
-                user: "dave",
-                submitted: "2025-11-13T20:22",
-                runtime: "06:10:55",
-                nodes: "gpu[3]",
-                workdir: "/proj/sim",
-                reason: "Out of memory",
-            },
-        ];
-
-        (current, past)
-    }
-
     fn default_actions() -> Vec<ActionPane> {
         vec![
             ActionPane {
@@ -992,41 +1041,38 @@ impl App {
                 content: PaneContent::Gpu,
             },
             ActionPane {
+                title: "scontrol",
+                shortcut: Some('s'),
+                content: PaneContent::Job(JobPaneKind::Scontrol),
+            },
+            ActionPane {
                 title: "Error Log",
                 shortcut: Some('e'),
-                content: PaneContent::Text(
-                    "Tail the stderr stream to quickly inspect why a job might be failing.",
-                ),
+                content: PaneContent::Job(JobPaneKind::ErrorLog),
             },
             ActionPane {
                 title: "Output Log",
                 shortcut: Some('o'),
-                content: PaneContent::Text(
-                    "Peek at stdout for quick progress updates or metrics your job emits.",
-                ),
+                content: PaneContent::Job(JobPaneKind::OutputLog),
             },
             ActionPane {
                 title: "Job Script",
                 shortcut: Some('j'),
-                content: PaneContent::Text(
-                    "Review the exact sbatch script and resource requests submitted to Slurm.",
-                ),
+                content: PaneContent::Job(JobPaneKind::JobScript),
             },
         ]
     }
 
-    fn focused_job(&self) -> &Job {
+    fn focused_job(&self) -> Option<&Job> {
         match self.focused_jobs {
             JobsListFocus::Current => self
                 .current_jobs
                 .get(self.selected_current)
-                .or_else(|| self.past_jobs.get(self.selected_past))
-                .expect("there is at least one job"),
+                .or_else(|| self.past_jobs.get(self.selected_past)),
             JobsListFocus::Past => self
                 .past_jobs
                 .get(self.selected_past)
-                .or_else(|| self.current_jobs.get(self.selected_current))
-                .expect("there is at least one job"),
+                .or_else(|| self.current_jobs.get(self.selected_current)),
         }
     }
 
@@ -1110,18 +1156,86 @@ impl App {
             .collect()
     }
 
+    fn refresh_jobs(&mut self) {
+        match self
+            .job_backend
+            .refresh_if_needed()
+            .map(|snapshot| snapshot.clone())
+        {
+            Ok(snapshot) => self.replace_jobs(snapshot),
+            Err(err) => {
+                self.connection_status = Some(format!("Failed to refresh jobs: {err}"));
+            }
+        }
+    }
+
+    fn refresh_job_details(&mut self) {
+        let Some(job) = self.focused_job().cloned() else {
+            self.job_details = None;
+            self.job_details_job_id = None;
+            self.job_details_last_fetch = None;
+            self.job_details_error = None;
+            return;
+        };
+
+        let needs_refresh = match self.job_details_job_id.as_ref() {
+            Some(current) if current == &job.id => self
+                .job_details_last_fetch
+                .map(|ts| ts.elapsed() >= JOB_DETAILS_REFRESH_INTERVAL)
+                .unwrap_or(true),
+            _ => true,
+        };
+
+        if !needs_refresh {
+            return;
+        }
+
+        match slurm::fetch_job_details(&job) {
+            Ok(details) => {
+                self.job_details_error = None;
+                self.job_details_job_id = Some(job.id.clone());
+                self.job_details_last_fetch = Some(Instant::now());
+                self.job_details = Some(details);
+            }
+            Err(err) => {
+                self.job_details = None;
+                self.job_details_error = Some(format!("Failed to read job data: {err}"));
+            }
+        }
+    }
+
+    fn replace_jobs(&mut self, snapshot: SlurmSnapshot) {
+        self.current_jobs = snapshot.current_jobs;
+        self.past_jobs = snapshot.past_jobs;
+
+        if self.current_jobs.is_empty() {
+            self.selected_current = 0;
+        } else if self.selected_current >= self.current_jobs.len() {
+            self.selected_current = self.current_jobs.len() - 1;
+        }
+
+        if self.past_jobs.is_empty() {
+            self.selected_past = 0;
+        } else if self.selected_past >= self.past_jobs.len() {
+            self.selected_past = self.past_jobs.len() - 1;
+        }
+    }
+
     fn connect_to_job(&mut self) {
-        let job = self.focused_job();
-        if matches!(job.state, "RUNNING" | "PENDING") {
-            self.connection_status = Some(format!(
-                "Connecting to job #{}, user {} on nodes {}...",
-                job.id, job.user, job.nodes
-            ));
+        if let Some(job) = self.focused_job() {
+            if matches!(job.state.as_str(), "RUNNING" | "PENDING") {
+                self.connection_status = Some(format!(
+                    "Connecting to job #{}, user {} on nodes {}...",
+                    job.id, job.user, job.nodes
+                ));
+            } else {
+                self.connection_status = Some(format!(
+                    "Job #{} is {} — connection redirected to inspector.",
+                    job.id, job.state
+                ));
+            }
         } else {
-            self.connection_status = Some(format!(
-                "Job #{} is {} — connection redirected to inspector.",
-                job.id, job.state
-            ));
+            self.connection_status = Some("No jobs available to connect to.".into());
         }
     }
 
@@ -1150,8 +1264,7 @@ impl App {
             return;
         }
 
-        self.system
-            .refresh_cpu();
+        self.system.refresh_cpu();
         self.system.refresh_memory();
         self.system.refresh_processes();
         self.cpu = CpuPane::from_system(&self.system);
@@ -1161,7 +1274,6 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        let (current_jobs, past_jobs) = Self::default_jobs();
         let actions = Self::default_actions();
         let mut system = System::new_all();
         system.refresh_all();
@@ -1170,6 +1282,19 @@ impl Default for App {
         let interactive_config = InteractiveJobConfig::load_or_default();
         let mut config_overlay = ConfigOverlayState::default();
         config_overlay.sync_buffer(&interactive_config);
+        let mut job_backend = SlurmBackend::new();
+        let (current_jobs, past_jobs, connection_status) = match job_backend.force_refresh() {
+            Ok(snapshot) => (
+                snapshot.current_jobs.clone(),
+                snapshot.past_jobs.clone(),
+                None,
+            ),
+            Err(err) => (
+                Vec::new(),
+                Vec::new(),
+                Some(format!("Failed to query Slurm: {err}")),
+            ),
+        };
         Self {
             current_jobs,
             past_jobs,
@@ -1183,9 +1308,14 @@ impl Default for App {
             gpu,
             last_metrics_update: Instant::now(),
             show_help: false,
-            connection_status: None,
+            connection_status,
             interactive_config,
             config_overlay,
+            job_backend,
+            job_details: None,
+            job_details_job_id: None,
+            job_details_last_fetch: None,
+            job_details_error: None,
         }
     }
 }
@@ -1200,17 +1330,11 @@ impl CpuPane {
             .count();
         let sleeping = processes
             .values()
-            .filter(|proc| matches!(
-                proc.status(),
-                ProcessStatus::Sleep | ProcessStatus::Idle
-            ))
+            .filter(|proc| matches!(proc.status(), ProcessStatus::Sleep | ProcessStatus::Idle))
             .count();
         let stopped = processes
             .values()
-            .filter(|proc| matches!(
-                proc.status(),
-                ProcessStatus::Stop | ProcessStatus::Zombie
-            ))
+            .filter(|proc| matches!(proc.status(), ProcessStatus::Stop | ProcessStatus::Zombie))
             .count();
 
         let load = System::load_average();
