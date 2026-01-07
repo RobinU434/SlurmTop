@@ -2,174 +2,34 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
-import os
+from typing import Optional
 
-try:  # Python 3.11+
-    import tomllib  # type: ignore[attr-defined]
-except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
-    import tomli as tomllib  # type: ignore[no-redef]
-
-import psutil
-from rich.console import Group
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
-from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Label, ListItem, ListView, Log, Static, TabPane, TabbedContent
+from textual.widgets import (
+    Footer,
+    Header,
+    Label,
+    ListView,
+    Log,
+    Static,
+    TabPane,
+    TabbedContent,
+)
 
-CONFIG_PATH = Path("config/interactive_job.toml")
+from slurmtop.config import load_interactive_config
+from slurmtop.job_manager import JobListManager
+from slurmtop.models import Job
+from slurmtop.screens import HelpScreen
+from slurmtop.utils import sample_script
+from slurmtop.widgets import CpuPane, GpuPane, JobListItem
+
 CSS_FILE = Path(__file__).with_name("styles.tcss")
-
-
-@dataclass
-class Job:
-    """Simple container for mock Slurm job metadata."""
-
-    job_id: str
-    name: str
-    state: str
-    user: str
-    submitted: str
-    runtime: str
-    nodes: str
-    reason: str
-
-    @property
-    def display(self) -> str:
-        return f"#{self.job_id} {self.name} ({self.state})"
-
-
-DEFAULT_CURRENT_JOBS: list[Job] = [
-    Job("581939", "deep-learning", "RUNNING", "alice", "2025-11-15 14:22", "02:13:11", "gpu[7-8]", "Scaling to 4 GPUs"),
-    Job("581940", "preprocess", "PENDING", "bob", "2025-11-16 09:03", "--", "cpu[1-2]", "Priority hold"),
-]
-
-DEFAULT_PAST_JOBS: list[Job] = [
-    Job("581901", "render", "COMPLETED", "carol", "2025-11-14 11:01", "00:43:08", "cpu[3-4]", "Finished successfully"),
-    Job("581875", "simulation", "FAILED", "dave", "2025-11-13 20:22", "06:10:55", "gpu[3]", "Out of memory"),
-]
-
-DEFAULT_INTERACTIVE_CONFIG = {
-    "partition": "debug",
-    "account": "research",
-    "time_limit": "01:00:00",
-    "nodes": 1,
-    "gpus": 1,
-}
-
-
-class JobListItem(ListItem):
-    """List item that retains the underlying Job."""
-
-    def __init__(self, job: Job) -> None:
-        super().__init__(Static(job.display))
-        self.job = job
-
-
-class CpuPane(Static):
-    """Widget that renders live CPU metrics using psutil."""
-
-    def on_mount(self) -> None:  # pragma: no cover - Textual hook
-        self.set_interval(2.0, self.update_metrics)
-        self.update_metrics()
-
-    def update_metrics(self) -> None:
-        per_core = psutil.cpu_percent(interval=None, percpu=True)
-        overall = sum(per_core) / max(len(per_core), 1)
-        mem = psutil.virtual_memory()
-        load = _safe_load_avg()
-
-        summary = Text(
-            f"Overall CPU: {overall:5.1f}%\n"
-            f"Memory: {mem.percent:5.1f}% ({_human_bytes(mem.used)} / {_human_bytes(mem.total)})\n"
-            f"Load average: {load[0]:.2f} {load[1]:.2f} {load[2]:.2f}",
-            style="cyan",
-        )
-
-        cores = Table.grid(expand=True)
-        cores.add_column(justify="left")
-        cores.add_column(justify="right")
-        for idx, value in enumerate(per_core):
-            bar = _usage_bar(value, width=20)
-            cores.add_row(f"CPU{idx:02}", f"{bar} {value:5.1f}%")
-
-        procs = _sample_processes()
-        proc_table = Table(title="Top Tasks", expand=True)
-        proc_table.add_column("PID", justify="right")
-        proc_table.add_column("User")
-        proc_table.add_column("CPU%", justify="right")
-        proc_table.add_column("MEM%", justify="right")
-        proc_table.add_column("Command")
-
-        for proc in procs:
-            proc_table.add_row(
-                str(proc["pid"]),
-                proc["user"],
-                f"{proc['cpu']:4.1f}",
-                f"{proc['mem']:4.1f}",
-                proc["name"],
-            )
-
-        self.update(Group(summary, Panel(cores, title="Per-core"), proc_table))
-
-
-class GpuPane(Static):
-    """Placeholder GPU view until real metrics are wired up."""
-
-    MOCK_DEVICES = [
-        ("GPU0 A100", "64°C", "92%", "78%", "62 / 80 GB", "python (alice)"),
-        ("GPU1 A100", "59°C", "73%", "65%", "51 / 80 GB", "python (bob)"),
-        ("GPU2 A100", "35°C", "6%", "12%", "idle", "-"),
-    ]
-
-    def on_mount(self) -> None:  # pragma: no cover - Textual hook
-        self.render_content()
-
-    def render_content(self) -> None:
-        table = Table(title="Devices", expand=True)
-        table.add_column("GPU")
-        table.add_column("Temp")
-        table.add_column("GPU%")
-        table.add_column("Mem%")
-        table.add_column("VRAM")
-        table.add_column("Process")
-
-        for row in self.MOCK_DEVICES:
-            table.add_row(*row)
-
-        self.update(table)
-
-class HelpScreen(ModalScreen[None]):
-    """Modal overlay showing all keyboard shortcuts."""
-
-    BINDINGS = [
-        Binding("escape", "dismiss", "Close"),
-        Binding("q", "dismiss", "Close"),
-    ]
-
-    def __init__(self, shortcuts: list[tuple[str, str]]) -> None:
-        super().__init__()
-        self.shortcuts = shortcuts
-
-    def compose(self) -> ComposeResult:  # pragma: no cover - UI composition
-        table = Table.grid(padding=(0, 2))
-        table.add_column("Shortcut", style="bold cyan")
-        table.add_column("Description", style="white")
-        for key, description in self.shortcuts:
-            table.add_row(key, description)
-
-        yield Static(Panel(table, title="SlurmTop Shortcuts"), id="help-panel")
-
-    def action_dismiss(self) -> None:
-        self.dismiss(None)
 
 
 class SlurmTopApp(App[None]):
@@ -189,18 +49,38 @@ class SlurmTopApp(App[None]):
         Binding("3", "show_error_tab", "Error Log", show=False),
         Binding("4", "show_output_tab", "Output Log", show=False),
         Binding("5", "show_script_tab", "Job Script", show=False),
+        Binding("[", "prev_tab", "Previous Tab", show=False),
+        Binding("]", "next_tab", "Next Tab", show=False),
         Binding("tab", "cycle_job_lists", "Switch List", priority=True, show=False),
-        Binding("shift+tab", "cycle_job_lists", "Switch List", priority=True, show=False),
+        Binding(
+            "shift+tab", "cycle_job_lists", "Switch List", priority=True, show=False
+        ),
     ]
 
     selected_job: reactive[Optional[Job]] = reactive(None)
 
-    def __init__(self, *, current_jobs: Optional[Iterable[Job]] = None, past_jobs: Optional[Iterable[Job]] = None) -> None:
+    def __init__(
+        self,
+        *,
+        use_slurm: bool = True,
+        filter_user: Optional[str] = None,
+    ) -> None:
         super().__init__()
-        self.current_jobs = list(current_jobs or DEFAULT_CURRENT_JOBS)
-        self.past_jobs = list(past_jobs or DEFAULT_PAST_JOBS)
-        self._focused_list = "current"
         self._interactive_config = load_interactive_config()
+
+        # Initialize job list manager with configurable refresh interval
+        refresh_interval = self._interactive_config.get("job_refresh_interval", 1.0)
+        self.job_manager = JobListManager(
+            use_slurm=use_slurm,
+            refresh_interval=float(refresh_interval),
+            filter_user=filter_user,
+        )
+
+        # Set up callbacks
+        self.job_manager.set_on_jobs_updated(self._on_jobs_updated)
+        self.job_manager.set_on_selection_changed(self._on_selection_changed)
+
+        self._focused_list = "current"
         self.tabs: TabbedContent | None = None
         self.tab_title: Label | None = None
         self.current_list: ListView | None = None
@@ -208,88 +88,184 @@ class SlurmTopApp(App[None]):
         self._tab_titles = {
             "tab-cpu": "CPU",
             "tab-gpu": "GPU",
-            "tab-error": "Error Log",
-            "tab-output": "Output Log",
-            "tab-script": "Job Script",
+            "tab-error": "Err.Log",
+            "tab-output": "Out.Log",
+            "tab-script": "Script",
         }
+        self._tab_order = ["tab-cpu", "tab-gpu", "tab-error", "tab-output", "tab-script"]
+
+        # variable allocations for widgets
+        self.cpu_pane: CpuPane | None = None
+        self.gpu_pane: GpuPane | None = None
+        self.error_log: Log | None = None
+        self.output_log: Log | None = None
+        self.script_view: Static | None = None
+        self.command_log: Log | None = None
 
     def compose(self) -> ComposeResult:  # pragma: no cover - Textual hook
-        yield Header(show_clock=True)
+        # yield Header(show_clock=True)
         with Horizontal(id="body"):
             with Vertical(id="jobs-column"):
-                yield Label("Current Jobs", id="current-label")
                 self.current_list = ListView(
-                    *[JobListItem(job) for job in self.current_jobs],
+                    *[JobListItem(job) for job in self.job_manager.get_current_jobs()],
                     id="current-jobs",
                 )
+                self.current_list.border_title = "Current Jobs"
+                self.current_list.can_focus = True
                 yield self.current_list
-                yield Label("Past Jobs", id="past-label")
+
                 self.past_list = ListView(
-                    *[JobListItem(job) for job in self.past_jobs],
+                    *[JobListItem(job) for job in self.job_manager.get_past_jobs()],
                     id="past-jobs",
                 )
+                self.past_list.border_title = "Past Jobs"
+                self.past_list.can_focus = True
                 yield self.past_list
+
             with Vertical(id="actions-column"):
+                with Vertical(id="inspector-panel"):
+                    yield Static("Select a job to inspect", id="inspector")
+                    
                 self.cpu_pane = CpuPane()
                 self.gpu_pane = GpuPane()
                 self.error_log = Log(highlight=True, name="error-log")
                 self.output_log = Log(highlight=True, name="output-log")
-                self.script_view = Static(_sample_script(), id="script-view")
-                self.tab_title = Label(self._tab_titles["tab-cpu"], id="tab-title")
-                yield self.tab_title
+                self.script_view = Static(sample_script(), id="script-view")
+                # self.tab_title = Label(self._tab_titles["tab-cpu"], id="tab-title")
+                # yield self.tab_title
                 self.tabs = TabbedContent(id="actions-tabs", initial="tab-cpu")
+                self.tabs.border_title = self._format_tab_title("tab-cpu")
                 with self.tabs:
                     yield TabPane("CPU", self.cpu_pane, id="tab-cpu")
                     yield TabPane("GPU", self.gpu_pane, id="tab-gpu")
                     yield TabPane("Error Log", self.error_log, id="tab-error")
                     yield TabPane("Output Log", self.output_log, id="tab-output")
                     yield TabPane("Job Script", self.script_view, id="tab-script")
-                yield Static("", id="status")
-                with Vertical(id="inspector-panel"):
-                    yield Label("Job Inspector", id="inspector-label")
-                    yield Static("Select a job to inspect", id="inspector")
+                self.command_log = Log(highlight=True, name="command-log", id="command-log")
+                self.command_log.border_title = "Command Log"
+                yield self.command_log
+        
         yield Footer()
 
     def on_mount(self) -> None:  # pragma: no cover - Textual hook
+        """Initialize the application when mounted."""
         current_list = self.current_list or self.query_one("#current-jobs", ListView)
         if current_list.children:
             current_list.index = 0
             first = current_list.children[0]
             if isinstance(first, JobListItem):
                 self.selected_job = first.job
+                self.job_manager.select_job(first.job)
                 self.update_inspector()
         self._focus_job_list("current")
         self.error_log.write("stderr tail unavailable (placeholder)")
         self.output_log.write("stdout tail unavailable (placeholder)")
+        
+        # Initialize command log
+        self.set_status("SlurmTop started")
+        self.set_status(f"Auto-refresh enabled: every {self.job_manager.refresh_interval:.0f}s")
+
+        # Set up automatic refresh with configurable interval
+        self.set_interval(self.job_manager.refresh_interval, self._auto_refresh_jobs)
+        # Set up periodic inspector updates to refresh runtime and other dynamic fields
+        self.set_interval(0.5, self.update_inspector)
+        # Set up periodic GPU info refresh for running jobs
+        self.set_interval(0.5, self._refresh_gpu_info)
 
     def watch_selected_job(self, job: Optional[Job]) -> None:
+        """React to changes in selected job."""
         if job is None:
             self.query_one("#inspector", Static).update("Select a job to inspect")
+            if self.gpu_pane:
+                self.gpu_pane.update_gpu_info(None)
         else:
             self.update_inspector()
+            if self.gpu_pane and job.state.upper() == "RUNNING":
+                self.gpu_pane.update_gpu_info(job.job_id)
 
     def update_inspector(self) -> None:
+        """Update the job inspector with current job information."""
         target = self.query_one("#inspector", Static)
         job = self.selected_job
         if job is None:
             target.update("Select a job to inspect")
             return
 
+        # Get the latest job data from JobListManager
+        current_jobs = self.job_manager.get_current_jobs()
+        past_jobs = self.job_manager.get_past_jobs()
+        
+        # Find the updated job data
+        updated_job = None
+        for j in current_jobs + past_jobs:
+            if j.job_id == job.job_id:
+                updated_job = j
+                break
+        
+        # Use updated job if found, otherwise fall back to cached job
+        display_job = updated_job if updated_job else job
+
         table = Table.grid(expand=True)
-        table.add_row(f"JobID: {job.job_id}", f"User: {job.user}")
-        table.add_row(f"State: {job.state}", f"Nodes: {job.nodes}")
-        table.add_row(f"Submit: {job.submitted}", f"Runtime: {job.runtime}")
-        table.add_row(f"Reason: {job.reason}", "")
+        table.add_row(f"JobID: {display_job.job_id}", f"User: {display_job.user}")
+        table.add_row(f"State: {display_job.state}", f"Nodes: {display_job.nodes}")
+        table.add_row(f"Submit: {display_job.submitted}", f"Runtime: {display_job.runtime}")
+        table.add_row(f"Reason: {display_job.reason}", "")
 
         target.update(table)
 
     def set_status(self, message: str) -> None:
-        status = self.query_one("#status", Static)
-        status.update(Text(message, style="bold green"))
+        """Log a command/status message to the command log."""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        if self.command_log:
+            self.command_log.write(f"[{timestamp}] {message}\n")
 
     def action_refresh_metrics(self) -> None:
         self.cpu_pane.update_metrics()
-        self.set_status("Metrics refreshed")
+        self.job_manager.refresh()
+        self.set_status("Metrics and job lists refreshed")
+
+    def _auto_refresh_jobs(self) -> None:
+        """Automatically refresh job lists in the background."""
+        self.job_manager.refresh()
+
+    def _refresh_gpu_info(self) -> None:
+        """Periodically refresh GPU information for the selected running job."""
+        if self.gpu_pane and self.selected_job:
+            if self.selected_job.state.upper() == "RUNNING":
+                self.gpu_pane.update_gpu_info(self.selected_job.job_id)
+
+    def _on_jobs_updated(self, current_jobs: list[Job], past_jobs: list[Job]) -> None:
+        """Callback when job lists are updated."""
+        # Update current jobs list
+        if self.current_list:
+            selected = self.job_manager.update_list_view(
+                self.current_list,
+                current_jobs,
+                preserve_selection=True,
+            )
+            # Only update selection if a valid job was returned and it's different
+            if selected and (not self.selected_job or selected.job_id != self.selected_job.job_id):
+                self.selected_job = selected
+                self.job_manager.select_job(selected)
+
+        # Update past jobs list
+        if self.past_list:
+            self.job_manager.update_list_view(
+                self.past_list,
+                past_jobs,
+                preserve_selection=False,
+            )
+
+    def _on_selection_changed(self, job: Optional[Job]) -> None:
+        """Callback when job selection changes."""
+        self.selected_job = job
+        # Update GPU widget if job is running
+        if self.gpu_pane:
+            if job and job.state.upper() == "RUNNING":
+                self.gpu_pane.update_gpu_info(job.job_id)
+            else:
+                self.gpu_pane.update_gpu_info(None)
 
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen(self._shortcut_entries()))
@@ -313,6 +289,26 @@ class SlurmTopApp(App[None]):
 
     def action_show_script_tab(self) -> None:
         self._show_tab("tab-script")
+    
+    def action_prev_tab(self) -> None:
+        """Switch to the previous tab."""
+        if self.tabs is None:
+            return
+        current = self.tabs.active
+        if current in self._tab_order:
+            current_idx = self._tab_order.index(current)
+            prev_idx = (current_idx - 1) % len(self._tab_order)
+            self._show_tab(self._tab_order[prev_idx])
+    
+    def action_next_tab(self) -> None:
+        """Switch to the next tab."""
+        if self.tabs is None:
+            return
+        current = self.tabs.active
+        if current in self._tab_order:
+            current_idx = self._tab_order.index(current)
+            next_idx = (current_idx + 1) % len(self._tab_order)
+            self._show_tab(self._tab_order[next_idx])
 
     def action_connect_job(self) -> None:
         job = self.selected_job
@@ -320,9 +316,13 @@ class SlurmTopApp(App[None]):
             self.set_status("Select a job before connecting")
             return
         if job.state.upper() not in {"RUNNING", "PENDING"}:
-            self.set_status(f"Job #{job.job_id} already {job.state.lower()}; showing details instead")
+            self.set_status(
+                f"Job #{job.job_id} already {job.state.lower()}; showing details instead"
+            )
         else:
-            self.set_status(f"Connecting to job #{job.job_id} on {job.nodes} as {job.user}…")
+            self.set_status(
+                f"Connecting to job #{job.job_id} on {job.nodes} as {job.user}…"
+            )
 
     def action_hook_job(self) -> None:
         job = self.selected_job
@@ -330,7 +330,9 @@ class SlurmTopApp(App[None]):
             self.set_status("Select a job before hooking into it")
             return
         if job.state.upper() != "RUNNING":
-            self.set_status(f"Job #{job.job_id} is {job.state.lower()}; wait until it is running")
+            self.set_status(
+                f"Job #{job.job_id} is {job.state.lower()}; wait until it is running"
+            )
             return
         command = f"srun --jobid {job.job_id} --pty bash"
         self.output_log.write(f"$ {command}")
@@ -346,13 +348,19 @@ class SlurmTopApp(App[None]):
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if isinstance(event.item, JobListItem):
             self.selected_job = event.item.job
-            self._focused_list = "current" if event.list_view.id == "current-jobs" else "past"
+            self.job_manager.select_job(event.item.job)
+            self._focused_list = (
+                "current" if event.list_view.id == "current-jobs" else "past"
+            )
             self._focus_job_list(self._focused_list)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, JobListItem):
             self.selected_job = event.item.job
-            self._focused_list = "current" if event.list_view.id == "current-jobs" else "past"
+            self.job_manager.select_job(event.item.job)
+            self._focused_list = (
+                "current" if event.list_view.id == "current-jobs" else "past"
+            )
             self._focus_job_list(self._focused_list)
 
     def _show_tab(self, tab_id: str) -> None:
@@ -360,7 +368,9 @@ class SlurmTopApp(App[None]):
             self.tabs.active = tab_id
             self._update_tab_header(tab_id)
 
-    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
         if event.tabbed_content is self.tabs and event.pane.id:
             self._update_tab_header(event.pane.id)
 
@@ -375,13 +385,25 @@ class SlurmTopApp(App[None]):
             list_view.index = 0
         self.set_focus(list_view)
 
+    def _format_tab_title(self, active_tab_id: str, marker: str = "<>") -> str:
+        """Format tab title showing all tabs with current one highlighted."""
+        assert len(marker) == 2, "Marker must be two characters"
+        parts = []
+        for tab_id in self._tab_order:
+            name = self._tab_titles.get(tab_id, tab_id)
+            if tab_id == active_tab_id:
+                parts.append(f"{marker[0]}{name}{marker[1]}")
+            else:
+                parts.append(name)
+        return " - ".join(parts)
+    
     def _update_tab_header(self, tab_id: str) -> None:
-        if self.tab_title is None:
+        if self.tabs is None:
             return
-        label = self._tab_titles.get(tab_id, tab_id)
-        self.tab_title.update(label)
-
+        self.tabs.border_title = self._format_tab_title(tab_id)
+        
     def _shortcut_entries(self) -> list[tuple[str, str]]:
+        refresh_info = f"Auto-refreshes every {self.job_manager.refresh_interval:.0f}s"
         return [
             ("Arrow keys", "Navigate Current/Past job lists"),
             ("Tab", "Toggle between Current and Past job lists"),
@@ -390,86 +412,12 @@ class SlurmTopApp(App[None]):
             ("3", "Show error log"),
             ("4", "Show output log"),
             ("5", "Show job script"),
+            ("[", "Previous tab panel"),
+            ("]", "Next tab panel"),
             ("k", "Connect to selected job"),
             ("h", "Hook into selected job via srun"),
             ("n", "Launch interactive job request"),
-            ("r", "Refresh CPU metrics"),
+            ("r", f"Refresh metrics and job lists ({refresh_info})"),
             ("?", "Show shortcuts overlay"),
             ("q", "Quit SlurmTop"),
         ]
-
-
-def _sample_processes(limit: int = 5) -> list[dict[str, object]]:
-    processes: list[dict[str, object]] = []
-    for proc in psutil.process_iter(["pid", "name", "username", "memory_percent"]):
-        try:
-            cpu = proc.cpu_percent(interval=None)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-        processes.append(
-            {
-                "pid": proc.info["pid"],
-                "name": proc.info.get("name") or "-",
-                "user": (proc.info.get("username") or "-"),
-                "cpu": cpu,
-                "mem": proc.info.get("memory_percent") or 0.0,
-            }
-        )
-    processes.sort(key=lambda row: row["cpu"], reverse=True)
-    return processes[:limit]
-
-
-def _usage_bar(percent: float, *, width: int = 20) -> str:
-    blocks = int((percent / 100.0) * width)
-    return "█" * blocks + "░" * (width - blocks)
-
-
-def _human_bytes(num: float) -> str:
-    step = 1024.0
-    units = ["B", "KiB", "MiB", "GiB", "TiB"]
-    for unit in units:
-        if abs(num) < step:
-            return f"{num:0.1f} {unit}"
-        num /= step
-    return f"{num:0.1f} PiB"
-
-
-def _safe_load_avg() -> tuple[float, float, float]:
-    try:
-        return os.getloadavg()
-    except OSError:  # Windows compatibility
-        return (0.0, 0.0, 0.0)
-
-
-def load_interactive_config() -> dict[str, object]:
-    if CONFIG_PATH.exists():
-        with CONFIG_PATH.open("rb") as fh:
-            data = tomllib.load(fh)
-    else:
-        data = DEFAULT_INTERACTIVE_CONFIG.copy()
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(_dict_to_toml(data), encoding="utf-8")
-    merged = DEFAULT_INTERACTIVE_CONFIG | data
-    return merged
-
-
-def _dict_to_toml(data: dict[str, object]) -> str:
-    lines = []
-    for key, value in data.items():
-        if isinstance(value, str):
-            lines.append(f"{key} = \"{value}\"")
-        else:
-            lines.append(f"{key} = {value}")
-    return "\n".join(lines) + "\n"
-
-
-def _sample_script() -> str:
-    return """#!/bin/bash
-#SBATCH --partition=debug
-#SBATCH --nodes=1
-#SBATCH --gres=gpu:1
-#SBATCH --time=01:00:00
-
-module load cuda
-srun python train.py --epochs 40
-"""

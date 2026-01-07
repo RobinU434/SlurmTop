@@ -24,6 +24,9 @@ dependencies = [
     "textual>=0.45",
     "psutil>=5.9",
     "tomli>=2.0; python_version < '3.11'",
+    "uv>=0.9.18",
+    "textual-dev>=1.8.0",
+    "lazygit-py>=0.58.0",
 ]
 
 [project.scripts]

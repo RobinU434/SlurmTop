@@ -1,5 +1,6 @@
 Screen {
     layout: vertical;
+    background: $surface;
 }
 
 #body {
@@ -9,37 +10,51 @@ Screen {
 
 #jobs-column,
 #actions-column {
-    padding: 1;
+    padding: 0;
+    border-title-align: left;
 }
 
 #jobs-column {
     width: 1fr;
-    border-right: solid #3a3a3a;
     height: 1fr;
 }
 
 #actions-column {
     width: 1.2fr;
     height: 1fr;
-    padding-left: 2;
+    padding-left: 1;
     layout: vertical;
 }
 
 ListView {
     height: 1fr;
-    border: solid #444444;
+    border: round white;
+    background: $surface;
+}
+
+ListView:focus {
+    height: 1fr;
+    border: round $accent;
+    border-title-color: $accent;
+    background: $surface;
+}
+
+Log {
+    height: 0.2fr;
+    background: $surface;
+    padding: 0;
 }
 
 #tab-title {
     text-style: bold;
-    border-bottom: solid #333333;
+    border-bottom: solid white;
     padding-bottom: 1;
 }
 
 TabbedContent {
     height: 1fr;
-    border: solid #333333;
-    padding: 1;
+    border: round white;
+    padding: 0;
 }
 
 ContentTabs {
@@ -58,23 +73,19 @@ ContentTabs Tab {
 }
 
 #status {
-    border: solid #333333;
+    border: round white;
     padding: 1;
     min-height: 1;
 }
 
 #inspector-panel {
-    border: solid #333333;
+    border: round white;
     padding: 1;
     height: 7;
 }
 
-#inspector {
-    height: 5;
-}
-
 #help-panel {
-    border: solid #444444;
+    border: round white;
     padding: 1;
-    background: #111111;
+    background: transparent;
 }
