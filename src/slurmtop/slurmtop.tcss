@@ -1,0 +1,199 @@
+/* Cluster overview bar */
+#cluster-bar {
+    dock: top;
+    height: 1;
+    background: transparent;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* Main two-column layout */
+#main-container {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#left-column {
+    width: 1fr;
+    layout: vertical;
+}
+
+#right-column {
+    width: 2fr;
+    layout: vertical;
+}
+
+/* Search input */
+#search-input {
+    dock: top;
+    height: 1;
+    background: transparent;
+    border: none;
+    padding: 0 1;
+}
+
+#search-input:focus {
+    border: none;
+}
+
+/* Left panels: 50/50 split */
+#active-jobs {
+    height: 1fr;
+    border: round $secondary-background-lighten-2;
+    border-title-color: $text-muted;
+    border-title-align: center;
+}
+
+#completed-jobs {
+    height: 1fr;
+    border: round $secondary-background-lighten-2;
+    border-title-color: $text-muted;
+    border-title-align: center;
+}
+
+/* Right panels: 2/3 detail, 1/3 metadata */
+#detail-view {
+    height: 2fr;
+    border: round $secondary-background-lighten-2;
+    border-title-color: $text-muted;
+    border-title-align: center;
+}
+
+#metadata-view {
+    height: 1fr;
+    border: round $secondary-background-lighten-2;
+    border-title-color: $text-muted;
+    border-title-align: center;
+}
+
+#command-log {
+    height: auto;
+    min-height: 3;
+    max-height: 6;
+    border: round $secondary-background-lighten-2;
+    border-title-color: $text-muted;
+    border-title-align: center;
+}
+
+/* Focus highlighting */
+#active-jobs:focus-within {
+    border: round $accent;
+    border-title-color: $accent;
+}
+#completed-jobs:focus-within {
+    border: round $accent;
+    border-title-color: $accent;
+}
+#detail-view:focus-within {
+    border: round $accent;
+    border-title-color: $accent;
+}
+#metadata-view:focus-within {
+    border: round $accent;
+    border-title-color: $accent;
+}
+#command-log:focus-within {
+    border: round $accent;
+    border-title-color: $accent;
+}
+
+/* Minimal tab styling */
+TabbedContent {
+    height: 1fr;
+}
+
+Tabs {
+    height: 1;
+    background: transparent;
+    dock: top;
+}
+
+Tab {
+    background: transparent;
+    color: $text-muted;
+    padding: 0 2;
+    min-width: 8;
+}
+
+Tab.-active {
+    color: $text;
+    text-style: bold;
+    background: transparent;
+}
+
+Tab:hover {
+    color: $text;
+    background: transparent;
+}
+
+Underline {
+    height: 0;
+}
+
+TabPane {
+    padding: 0;
+}
+
+/* Tables */
+ActiveJobTable {
+    height: 1fr;
+}
+
+CompletedJobTable {
+    height: 1fr;
+}
+
+DataTable {
+    height: 1fr;
+}
+
+DataTable > .datatable--header {
+    text-style: none;
+    color: $text-muted;
+    background: transparent;
+}
+
+/* Log areas */
+RichLog {
+    height: 1fr;
+}
+
+/* Thin scrollbars: single-character track with subtle thumb (vertical + horizontal) */
+* {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+    scrollbar-background: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-background-active: transparent;
+    scrollbar-color: $text-muted 30%;
+    scrollbar-color-hover: $text-muted 50%;
+    scrollbar-color-active: $text-muted 60%;
+    scrollbar-corner-color: transparent;
+}
+
+DataTable, RichLog, VerticalScroll, Static {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+    scrollbar-background: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-background-active: transparent;
+    scrollbar-color: $text-muted 30%;
+    scrollbar-color-hover: $text-muted 50%;
+    scrollbar-color-active: $text-muted 60%;
+    scrollbar-corner-color: transparent;
+}
+
+Footer {
+    dock: bottom;
+    background: transparent;
+}
+
+Footer > .footer--key {
+    background: transparent;
+    color: $text-muted;
+}
+
+Footer > .footer--description {
+    background: transparent;
+    color: $text;
+}

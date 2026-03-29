@@ -1,36 +1,32 @@
-[build-system]
-requires = ["hatchling>=1.25"]
-build-backend = "hatchling.build"
-
 [project]
 name = "slurmtop"
-version = "0.2.0"
-description = "Terminal UI for Slurm job monitoring (pure Python/Textual)."
+version = "0.1.0"
+description = "A TUI for monitoring Slurm HPC jobs"
 readme = "README.md"
-requires-python = ">=3.9"
-authors = [
-    { name = "Robin", email = "root@example.com" },
-]
-keywords = ["slurm", "tui", "textual", "terminal"]
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["slurm", "hpc", "tui", "monitoring", "jobs"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Environment :: Console :: Curses",
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Topic :: System :: Monitoring",
+    "Topic :: System :: Clustering",
 ]
 dependencies = [
-    "textual>=0.45",
-    "psutil>=5.9",
-    "tomli>=2.0; python_version < '3.11'",
-    "uv>=0.9.18",
-    "textual-dev>=1.8.0",
-    "lazygit-py>=0.58.0",
+    "textual>=0.86",
 ]
 
 [project.scripts]
-slurmtop = "slurmtop:main"
+slurmtop = "slurmtop.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["slurmtop"]
+packages = ["src/slurmtop"]
