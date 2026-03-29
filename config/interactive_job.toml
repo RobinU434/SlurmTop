@@ -1,6 +1,0 @@
-partition = "debug"
-account = "research"
-time_limit = "01:00:00"
-nodes = 1
-gpus = 1
-job_refresh_interval = 1.0
