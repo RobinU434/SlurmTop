@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from pathlib import Path
 
 # Use tomllib (3.11+) for reading, fall back to manual parsing for writing
@@ -13,6 +15,7 @@ except ImportError:
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "slurmtop"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
+LOG_CACHE_FILE = CONFIG_DIR / "log_cache.json"
 
 
 def load() -> dict:
@@ -82,3 +85,54 @@ def set_partition_colors(colors: dict[str, str]) -> None:
     data = load()
     data["partition_colors"] = colors
     save(data)
+
+
+# ---------------------------------------------------------------------------
+# Log path cache — remembers StdOut/StdErr paths from scontrol
+# ---------------------------------------------------------------------------
+# Format: {"<job_id>": {"stdout": "...", "stderr": "...", "ts": <epoch>}, ...}
+
+
+def _load_log_cache() -> dict:
+    if not LOG_CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(LOG_CACHE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_log_cache(cache: dict) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_CACHE_FILE.write_text(json.dumps(cache))
+
+
+def cache_log_paths(job_id: str, stdout_path: str | None, stderr_path: str | None) -> None:
+    """Store stdout/stderr paths for a job (called when scontrol provides them)."""
+    if not stdout_path and not stderr_path:
+        return
+    cache = _load_log_cache()
+    cache[job_id] = {
+        "stdout": stdout_path or "",
+        "stderr": stderr_path or "",
+        "ts": time.time(),
+    }
+    _save_log_cache(cache)
+
+
+def get_cached_log_paths(job_id: str) -> tuple[str | None, str | None]:
+    """Retrieve cached stdout/stderr paths for a job."""
+    cache = _load_log_cache()
+    entry = cache.get(job_id)
+    if not entry:
+        return None, None
+    return entry.get("stdout") or None, entry.get("stderr") or None
+
+
+def prune_log_cache(max_age_days: int = 30) -> None:
+    """Remove cache entries older than max_age_days."""
+    cache = _load_log_cache()
+    cutoff = time.time() - max_age_days * 86400
+    pruned = {k: v for k, v in cache.items() if v.get("ts", 0) > cutoff}
+    if len(pruned) < len(cache):
+        _save_log_cache(pruned)

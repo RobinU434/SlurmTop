@@ -95,9 +95,10 @@ Select a job in either table and use `[` / `]` to switch between these tabs:
 ### stdout / stderr
 
 Displays the tail of the job's standard output and error log files. SlurmTop finds log
-files by reading `StdOut` / `StdErr` from `scontrol show job`. For older jobs not in
-Slurm's memory, it falls back to `sacct` and searches the working directory for common
-patterns (`slurm-JOBID.out`, `JOBNAME-JOBID.out`, `logs/` subdirectory, etc).
+files by reading `StdOut` / `StdErr` from `scontrol show job`. For older jobs no longer
+in Slurm's memory, it checks the **log path cache** first (see
+[Log Path Cache](#log-path-cache)), then falls back to searching the working directory
+for common patterns (`slurm-JOBID.out`, `JOBNAME-JOBID.out`, `logs/` subdirectory, etc).
 
 ### cpu
 
@@ -198,6 +199,66 @@ The bottom-right panel shows a timestamped log of all actions and their results:
   >>> 2465485 COMPLETED
 ```
 
+## Log Path Cache
+
+Slurm's `scontrol show job` provides the exact `StdOut`/`StdErr` file paths for a job,
+but only while the job is still in Slurm's memory (typically a few minutes to hours after
+completion). After that, the paths are lost and SlurmTop has to guess based on filename
+patterns — which can fail if you use custom `--output`/`--error` names.
+
+To solve this, SlurmTop **caches log paths while jobs are still running**, so they remain
+available after the job terminates. The cache is stored in
+`~/.config/slurmtop/log_cache.json` and is automatically pruned on startup.
+
+### How the cache is populated
+
+There are two modes, chosen automatically:
+
+| Mode | When | How |
+|------|------|-----|
+| **Background thread** | No daemon running | SlurmTop starts a thread that polls `scontrol` every 30s for all running jobs and caches their log paths. The thread stops when SlurmTop exits. |
+| **External daemon** | Daemon is running | SlurmTop detects the daemon via PID file and lets it handle caching. The daemon runs independently and keeps caching even when SlurmTop is closed. |
+
+The active mode is shown in the Command Log at startup.
+
+### Standalone daemon
+
+The daemon caches log paths continuously in the background, even when SlurmTop isn't
+open. This is useful if you want to be able to read logs of jobs that finished while you
+were away.
+
+```bash
+# Start the daemon (runs in foreground, Ctrl+C to stop)
+slurmtop-daemon start
+
+# Start in background
+slurmtop-daemon start &
+
+# With remote mode
+slurmtop-daemon start --remote user@login.hpc.edu &
+
+# Custom poll interval (default: 30s)
+slurmtop-daemon start --interval 60
+
+# Check if daemon is running
+slurmtop-daemon status
+
+# Stop the daemon
+slurmtop-daemon stop
+```
+
+When the daemon is running, SlurmTop detects it automatically and skips starting its own
+caching thread. When the daemon is stopped, SlurmTop falls back to the built-in thread.
+
+### Cache files
+
+| File | Purpose |
+|------|---------|
+| `~/.config/slurmtop/log_cache.json` | Cached `StdOut`/`StdErr` paths per job ID |
+| `~/.config/slurmtop/daemon.pid` | PID file for daemon coordination |
+
+Entries older than 30 days (or `--days`, whichever is larger) are pruned automatically.
+
 ## Remote Mode
 
 Run SlurmTop on your local machine while monitoring a remote cluster:
@@ -278,6 +339,8 @@ slurmtop --partition-order gpu,cpu,fat
 
 ## CLI Reference
 
+### slurmtop
+
 ```
 slurmtop [-h] [-r SEC] [-d N] [-u USER] [-p PARTITION]
          [--no-gpu] [--no-live] [--partition-order P1,P2,...] [-H HOST]
@@ -293,6 +356,21 @@ slurmtop [-h] [-r SEC] [-d N] [-u USER] [-p PARTITION]
 | `--no-live` | Disable live CPU and GPU monitoring (no SSH/srun to nodes) | off |
 | `--partition-order` | Comma-separated partition display order for cluster bar | (sinfo order) |
 | `-H`, `--remote` | SSH target for remote mode (e.g. `user@login.hpc.edu`) | (local) |
+
+### slurmtop-daemon
+
+```
+slurmtop-daemon {start,stop,status} [--user USER] [--remote HOST] [--interval SEC]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `start` | Start the daemon (runs in foreground; use `&` for background) |
+| `stop` | Stop the running daemon |
+| `status` | Check if the daemon is running |
+| `--user` | Slurm user to monitor (default: `$USER`) |
+| `--remote` | SSH target for remote mode |
+| `--interval` | Poll interval in seconds (default: 30) |
 
 ## Requirements
 

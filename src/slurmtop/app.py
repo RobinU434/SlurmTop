@@ -13,6 +13,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, RichLog, Static
 
 from slurmtop import slurm
+from slurmtop.daemon import CacheThread, is_daemon_running
 from slurmtop.models import Config
 from slurmtop.widgets.detail_view import DetailView, parse_mem_bytes
 from slurmtop.widgets.job_table import ActiveJobTable, CompletedJobTable, JobSelected, set_partition_colors
@@ -220,6 +221,8 @@ class SlurmTopApp(App):
     # Resubmit state
     _resubmit_script: str = ""
     _resubmit_work_dir: str = ""
+    # Log path cache thread (when no standalone daemon is running)
+    _cache_thread: CacheThread | None = None
 
     def compose(self) -> ComposeResult:
         show_gpu = not self.config.no_gpu and not self.config.no_live
@@ -242,6 +245,10 @@ class SlurmTopApp(App):
         slurm.set_config(self.config)
         set_partition_colors(self.config.partition_colors)
 
+        # Prune old log path cache entries
+        from slurmtop import config as persistent_config
+        persistent_config.prune_log_cache(max_age_days=max(self.config.days, 30))
+
         self.query_one("#active-jobs").border_title = "Active Jobs"
         self.query_one("#completed-jobs").border_title = "Terminated Jobs"
         self.query_one("#detail-view").border_title = "Job Details"
@@ -260,12 +267,27 @@ class SlurmTopApp(App):
         for override in self._config_overrides:
             self._log("config override", override)
 
+        # Start log path caching (daemon or thread)
+        if is_daemon_running():
+            self._log("log cache", "daemon is running, using external daemon")
+        else:
+            self._cache_thread = CacheThread(
+                user=self.config.user,
+                remote=self.config.remote,
+            )
+            self._cache_thread.start()
+            self._log("log cache", "started background thread")
+
         # Polling
         self.set_interval(self.config.refresh, self._poll_jobs)
         self.call_after_refresh(self._poll_jobs)
 
         if not self.config.no_live:
             self.set_interval(self.config.refresh, self._refresh_live_monitors)
+
+    def on_unmount(self) -> None:
+        if self._cache_thread and self._cache_thread.running:
+            self._cache_thread.stop()
 
     # ------------------------------------------------------------------
     # Data polling
