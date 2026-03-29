@@ -7,3 +7,6 @@ build/
 *.swp
 *.swo
 .DS_Store
+
+Claude.md
+uv.lock
