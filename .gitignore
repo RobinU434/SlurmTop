@@ -8,5 +8,5 @@ build/
 *.swo
 .DS_Store
 
-Claude.md
-uv.lock
+CLAUDE.md
+*.lock
