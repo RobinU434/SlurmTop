@@ -178,8 +178,8 @@ class ActiveJobTable(DataTable):
         except Exception:
             return None
 
-    def on_data_table_cursor_moved(self, event: DataTable.CursorMoved) -> None:
-        job_id = self.get_selected_job_id()
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        job_id = str(event.row_key.value) if event.row_key else self.get_selected_job_id()
         if job_id:
             self.post_message(JobSelected(job_id, "active"))
 
@@ -302,7 +302,7 @@ class CompletedJobTable(DataTable):
         except Exception:
             return None
 
-    def on_data_table_cursor_moved(self, event: DataTable.CursorMoved) -> None:
-        job_id = self.get_selected_job_id()
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        job_id = str(event.row_key.value) if event.row_key else self.get_selected_job_id()
         if job_id:
             self.post_message(JobSelected(job_id, "completed"))

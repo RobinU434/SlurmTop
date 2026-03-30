@@ -141,6 +141,7 @@ async def get_running_jobs(config: Config | None = None) -> list[RunningJob]:
             gres=parts[9].strip() or "None",
             work_dir=parts[10].strip(),
         ))
+    jobs.sort(key=lambda j: int(j.job_id) if j.job_id.isnumeric() else 0, reverse=True)
     return jobs
 
 
@@ -193,7 +194,7 @@ async def get_completed_jobs(config: Config | None = None) -> list[CompletedJob]
             elapsed=parts[6].strip(),
             partition=parts[7].strip(),
         ))
-    jobs.sort(key=lambda j: int(j.job_id) if j.job_id.isdigit() else 0, reverse=True)
+    jobs.sort(key=lambda j: int(j.job_id) if j.job_id.isnumeric() else 0, reverse=True)
     return jobs
 
 
@@ -498,11 +499,15 @@ async def read_log_file(path: str | None, tail_lines: int = TAIL_LINES) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def cancel_job(job_id: str) -> tuple[bool, str]:
-    """Cancel a job. Returns (success, message)."""
-    _, stderr, rc = await _run_cmd("scancel", job_id)
+async def cancel_job(job_id: str, force: bool = False) -> tuple[bool, str]:
+    """Cancel a job. If force=True, sends SIGKILL immediately. Returns (success, msg)."""
+    if force:
+        _, stderr, rc = await _run_cmd("scancel", "--signal=KILL", job_id)
+    else:
+        _, stderr, rc = await _run_cmd("scancel", job_id)
     if rc == 0:
-        return True, f"Job {job_id} cancelled."
+        kind = "force-cancelled" if force else "cancelled"
+        return True, f"Job {job_id} {kind}."
     return False, f"Failed to cancel job {job_id}: {stderr.strip()}"
 
 

@@ -34,10 +34,10 @@ def main() -> None:
     )
     parser.add_argument(
         "-r", "--refresh",
-        type=float,
+        type=str,
         default=None,
         metavar="SEC",
-        help="Auto-refresh interval in seconds (default: 5)",
+        help="Auto-refresh interval in seconds (default: 5). Set to 0 or 'off' to disable.",
     )
     parser.add_argument(
         "-d", "--days",
@@ -85,11 +85,28 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Parse refresh: support "off" / "0" to disable
+    cli_refresh = None
+    if args.refresh is not None:
+        if args.refresh.lower() in ("off", "none", "null", "0"):
+            cli_refresh = 0.0
+        else:
+            try:
+                cli_refresh = float(args.refresh)
+            except ValueError:
+                parser.error(f"Invalid refresh value: {args.refresh}")
+
+    # If remote is specified and no explicit --user, extract user from user@host
+    remote_val = args.remote
+    default_user = os.environ.get("USER", os.environ.get("LOGNAME", ""))
+    if remote_val and "@" in remote_val and args.user is None:
+        default_user = remote_val.split("@")[0]
+
     # Hard defaults (when neither CLI nor config file provides a value)
     defaults = {
         "refresh": 5.0,
         "days": 7,
-        "user": os.environ.get("USER", os.environ.get("LOGNAME", "")),
+        "user": default_user,
         "partition": "",
         "no_gpu": False,
         "no_live": False,
@@ -103,7 +120,7 @@ def main() -> None:
     resolved: dict[str, object] = {}
 
     cli_values = {
-        "refresh": args.refresh,
+        "refresh": cli_refresh,
         "days": args.days,
         "user": args.user,
         "partition": args.partition,

@@ -55,12 +55,14 @@ class HelpScreen(ModalScreen[None]):
                 "  [bold cyan]Up / Down[/]       Navigate job list (wraps between panels)\n"
                 "  [bold cyan]Tab / Shift+Tab[/] Switch right panel focus\n"
                 "  [bold cyan]Left / Right[/]    Switch right panel focus\n"
-                "  [bold cyan]\\[ / \\][/]          Switch tabs within right panel\n"
+                "  [bold cyan]\\[ / \\][/]          Switch Job Details tabs\n"
+                "  [bold cyan]( / )[/]           Switch Job Metadata tabs\n"
                 "  [bold cyan]Escape[/]          Close search bar\n\n"
                 "[bold]Actions[/]\n"
                 "  [bold cyan]/[/]               Search / filter jobs by ID, name, or partition\n"
                 "  [bold cyan]m[/]               Bookmark / unbookmark job (★ pinned to top)\n"
                 "  [bold cyan]c[/]               Cancel selected job (with confirmation)\n"
+                "  [bold cyan]Shift+C[/]         Force cancel job (SIGKILL, no confirmation)\n"
                 "  [bold cyan]s[/]               Resubmit terminated job (with confirmation)\n"
                 "  [bold cyan]o[/]               SSH to job's compute node (suspends TUI)\n"
                 "  [bold cyan]r[/]               Force refresh all data\n"
@@ -184,6 +186,7 @@ class SlurmTopApp(App):
         Binding("slash", "toggle_search", "Search", show=True, key_display="/"),
         Binding("m", "toggle_bookmark", "Bookmark", show=True),
         Binding("c", "cancel_job", "Cancel", show=True),
+        Binding("shift+c", "force_cancel_job", "Force Cancel", show=False),
         Binding("s", "resubmit_job", "Resubmit", show=True),
         Binding("o", "ssh_to_node", "SSH", show=True),
         Binding("r", "refresh", "Refresh", show=True),
@@ -191,38 +194,39 @@ class SlurmTopApp(App):
         Binding("shift+tab", "focus_prev_right", "Prev Panel", show=False),
         Binding("left", "focus_prev_right", show=False),
         Binding("right", "focus_next_right", show=False),
-        Binding("left_square_bracket", "prev_tab", "Prev Tab", show=False),
-        Binding("right_square_bracket", "next_tab", "Next Tab", show=False),
+        Binding("left_square_bracket", "prev_detail_tab", show=False),
+        Binding("right_square_bracket", "next_detail_tab", show=False),
+        Binding("left_parenthesis", "prev_meta_tab", show=False),
+        Binding("right_parenthesis", "next_meta_tab", show=False),
     ]
 
     def __init__(self, config: Config | None = None, config_overrides: list[str] | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.config = config or Config()
         self._config_overrides = config_overrides or []
-
-    # Track which right panel has focus: "detail" or "metadata"
-    _right_focus: str = "detail"
-    # Currently selected job
-    _selected_job_id: str | None = None
-    _selected_source: str = "active"
-    # Node of selected job (for live monitoring)
-    _selected_node: str = ""
-    # Help screen toggle
-    _help_open: bool = False
-    # Search
-    _search_visible: bool = False
-    # Bookmarks (session-only)
-    _bookmarked_ids: set[str] = set()
-    # Job completion tracking
-    _known_running_ids: set[str] = set()
-    _first_poll_done: bool = False
-    # Sparkline resource history: job_id -> {"memory": [...], "cpu": [...]}
-    _resource_history: dict[str, dict[str, list[float]]] = {}
-    # Resubmit state
-    _resubmit_script: str = ""
-    _resubmit_work_dir: str = ""
-    # Log path cache thread (when no standalone daemon is running)
-    _cache_thread: CacheThread | None = None
+        # Track which right panel has focus: "detail" or "metadata"
+        self._right_focus: str = "detail"
+        # Currently selected job
+        self._selected_job_id: str | None = None
+        self._selected_source: str = "active"
+        # Node of selected job (for live monitoring)
+        self._selected_node: str = ""
+        # Help screen toggle
+        self._help_open: bool = False
+        # Search
+        self._search_visible: bool = False
+        # Bookmarks (session-only)
+        self._bookmarked_ids: set[str] = set()
+        # Job completion tracking
+        self._known_running_ids: set[str] = set()
+        self._first_poll_done: bool = False
+        # Sparkline resource history
+        self._resource_history: dict[str, dict[str, list[float]]] = {}
+        # Resubmit state
+        self._resubmit_script: str = ""
+        self._resubmit_work_dir: str = ""
+        # Log path cache thread
+        self._cache_thread: CacheThread | None = None
 
     def compose(self) -> ComposeResult:
         show_gpu = not self.config.no_gpu and not self.config.no_live
@@ -278,12 +282,27 @@ class SlurmTopApp(App):
             self._cache_thread.start()
             self._log("log cache", "started background thread")
 
-        # Polling
-        self.set_interval(self.config.refresh, self._poll_jobs)
-        self.call_after_refresh(self._poll_jobs)
+        # Login node warning
+        import socket
+        hostname = socket.gethostname()
+        remote_host = self.config.remote.split("@")[-1] if self.config.remote else ""
+        for name in (hostname, remote_host):
+            if name and "login" in name.lower():
+                self._log("[yellow]warning[/]", f"running on login node '{name}'")
+                self.notify(
+                    f"Running on login node '{name}' — be mindful of resource usage",
+                    severity="warning",
+                    timeout=8,
+                )
 
-        if not self.config.no_live:
-            self.set_interval(self.config.refresh, self._refresh_live_monitors)
+        # Polling (refresh=0 disables auto-refresh)
+        self.call_after_refresh(self._poll_jobs)
+        if self.config.refresh > 0:
+            self.set_interval(self.config.refresh, self._poll_jobs)
+            if not self.config.no_live:
+                self.set_interval(self.config.refresh, self._refresh_live_monitors)
+        else:
+            self._log("auto-refresh", "disabled (refresh=0)")
 
     def on_unmount(self) -> None:
         if self._cache_thread and self._cache_thread.running:
@@ -558,6 +577,16 @@ class SlurmTopApp(App):
             callback=self._on_cancel_confirmed,
         )
 
+    async def action_force_cancel_job(self) -> None:
+        if self._selected_job_id is None:
+            self._set_status("No job selected")
+            return
+        self._log(f"scancel --signal=KILL {self._selected_job_id}")
+        success, msg = await slurm.cancel_job(self._selected_job_id, force=True)
+        self._log("force cancel", msg)
+        if success:
+            await self._poll_jobs()
+
     async def _on_cancel_confirmed(self, confirmed: bool | None) -> None:
         if not confirmed or self._selected_job_id is None:
             return
@@ -661,14 +690,14 @@ class SlurmTopApp(App):
     def action_focus_prev_right(self) -> None:
         self.action_focus_next_right()
 
-    def action_next_tab(self) -> None:
-        if self._right_focus == "detail":
-            self.query_one("#detail-view", DetailView).switch_tab(1)
-        else:
-            self.query_one("#metadata-view", MetadataView).switch_tab(1)
+    def action_next_detail_tab(self) -> None:
+        self.query_one("#detail-view", DetailView).switch_tab(1)
 
-    def action_prev_tab(self) -> None:
-        if self._right_focus == "detail":
-            self.query_one("#detail-view", DetailView).switch_tab(-1)
-        else:
-            self.query_one("#metadata-view", MetadataView).switch_tab(-1)
+    def action_prev_detail_tab(self) -> None:
+        self.query_one("#detail-view", DetailView).switch_tab(-1)
+
+    def action_next_meta_tab(self) -> None:
+        self.query_one("#metadata-view", MetadataView).switch_tab(1)
+
+    def action_prev_meta_tab(self) -> None:
+        self.query_one("#metadata-view", MetadataView).switch_tab(-1)
