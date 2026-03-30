@@ -1,6 +1,12 @@
-# SlurmTop
+<p align="center">
+  <img src="img/SlurmTop-Logo.png" alt="SlurmTop Logo" width="200">
+</p>
 
-A terminal UI for monitoring Slurm HPC jobs — like `htop` for your cluster.
+<h1 align="center">SlurmTop</h1>
+
+<p align="center">
+  A terminal UI for monitoring Slurm HPC jobs — like <code>htop</code> for your cluster.
+</p>
 
 SlurmTop gives you a live overview of your running and past jobs, lets you read
 stdout/stderr logs, inspect resource usage, monitor CPU and GPU activity on compute
