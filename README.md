@@ -2,7 +2,7 @@
   <img src="img/SlurmTop-Logo.png" alt="SlurmTop Logo" width="200">
 </p>
 
-<h1 align="center">SlurmTop</h1>
+<h1 align="center"></h1>
 
 <p align="center">
   A terminal UI for monitoring Slurm HPC jobs — like <code>htop</code> for your cluster.
