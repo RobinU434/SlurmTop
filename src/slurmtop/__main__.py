@@ -154,8 +154,9 @@ def main() -> None:
     if args.partition_order is not None and part_order:
         persistent_config.set_partition_order(part_order)
 
-    # Partition colors: config file only
+    # Config-file-only settings
     partition_colors = persistent_config.get_partition_colors()
+    editor = saved.get("editor", "vim")
 
     config = Config(
         refresh=float(resolved["refresh"]),
@@ -167,6 +168,7 @@ def main() -> None:
         remote=str(resolved["remote"]),
         partition_order=resolved["partition_order"],
         partition_colors=partition_colors,
+        editor=str(editor),
     )
 
     from slurmtop.app import SlurmTopApp

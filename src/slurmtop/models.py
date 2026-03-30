@@ -18,6 +18,7 @@ class Config:
     remote: str = ""  # SSH target for remote mode, e.g. "user@login.hpc.edu"
     partition_order: list[str] | None = None  # e.g. ["gpu", "cpu", "fat"]
     partition_colors: dict[str, str] | None = None  # e.g. {"gpu": "green", "cpu": "cyan"}
+    editor: str = "vim"  # text editor for viewing log files ("vim", "nano", etc.)
 
 
 @dataclass

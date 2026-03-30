@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
+import shutil
 from datetime import datetime
 
 from textual.app import App, ComposeResult
@@ -64,6 +66,8 @@ class HelpScreen(ModalScreen[None]):
                 "  [bold cyan]c[/]               Cancel selected job (with confirmation)\n"
                 "  [bold cyan]Shift+C[/]         Force cancel job (SIGKILL, no confirmation)\n"
                 "  [bold cyan]s[/]               Resubmit terminated job (with confirmation)\n"
+                "  [bold cyan]e[/]               Open stdout in editor (vim/nano, set in config)\n"
+                "  [bold cyan]Shift+E[/]         Open stderr in editor\n"
                 "  [bold cyan]o[/]               SSH to job's compute node (suspends TUI)\n"
                 "  [bold cyan]r[/]               Force refresh all data\n"
                 "  [bold cyan]?[/]               Toggle this help screen\n"
@@ -189,6 +193,8 @@ class SlurmTopApp(App):
         Binding("shift+c", "force_cancel_job", "Force Cancel", show=False),
         Binding("s", "resubmit_job", "Resubmit", show=True),
         Binding("o", "ssh_to_node", "SSH", show=True),
+        Binding("e", "edit_stdout", "Edit Out", show=True),
+        Binding("shift+e", "edit_stderr", "Edit Err", show=False),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("tab", "focus_next_right", "Next Panel", show=False),
         Binding("shift+tab", "focus_prev_right", "Prev Panel", show=False),
@@ -225,6 +231,9 @@ class SlurmTopApp(App):
         # Resubmit state
         self._resubmit_script: str = ""
         self._resubmit_work_dir: str = ""
+        # Current job log paths (for editor)
+        self._stdout_path: str | None = None
+        self._stderr_path: str | None = None
         # Log path cache thread
         self._cache_thread: CacheThread | None = None
 
@@ -442,9 +451,13 @@ class SlurmTopApp(App):
             detail_view.clear_all()
             metadata_view.load_detail(None)
             self._selected_node = ""
+            self._stdout_path = None
+            self._stderr_path = None
             return
 
         self._selected_node = detail.node_list
+        self._stdout_path = detail.stdout_path
+        self._stderr_path = detail.stderr_path
 
         # Load logs and stats — but NOT live CPU/GPU on selection.
         # Live monitors are loaded lazily by _refresh_live_monitors when
@@ -673,6 +686,63 @@ class SlurmTopApp(App):
             print(f"Type 'exit' to return to SlurmTop.\n")
             os.system(cmd_str)
         self._log("ssh", f"session to {node} closed")
+
+    # ------------------------------------------------------------------
+    # Open log files in editor
+    # ------------------------------------------------------------------
+
+    async def action_edit_stdout(self) -> None:
+        await self._open_in_editor(self._stdout_path, "stdout")
+
+    async def action_edit_stderr(self) -> None:
+        await self._open_in_editor(self._stderr_path, "stderr")
+
+    async def _open_in_editor(self, path: str | None, label: str) -> None:
+        if not path:
+            self._log(f"edit {label}", "no log file path available")
+            return
+
+        editor = self.config.editor
+        # Check editor exists
+        if shutil.which(editor) is None:
+            self._log(f"edit {label}", f"editor '{editor}' not found — set 'editor' in config.toml")
+            return
+
+        if self.config.remote:
+            # Remote: copy file to a local temp file, open editor, clean up
+            import tempfile
+            self._log(f"edit {label}", f"fetching {path} from {self.config.remote}...")
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=f"_{os.path.basename(path)}",
+                prefix="slurmtop_",
+                delete=False,
+            )
+            tmp.close()
+            # scp the file
+            rc = os.system(f"scp -q {self.config.remote}:{shlex.quote(path)} {shlex.quote(tmp.name)}")
+            if rc != 0:
+                self._log(f"edit {label}", f"failed to fetch remote file")
+                os.unlink(tmp.name)
+                return
+            local_path = tmp.name
+        else:
+            if not os.path.isfile(path):
+                self._log(f"edit {label}", f"file not found: {path}")
+                return
+            local_path = path
+
+        self._log(f"edit {label}", f"{editor} {os.path.basename(path)}")
+        with self.suspend():
+            os.system(f"{shlex.quote(editor)} {shlex.quote(local_path)}")
+
+        # Clean up temp file for remote mode
+        if self.config.remote and local_path != path:
+            try:
+                os.unlink(local_path)
+            except OSError:
+                pass
+
+        self._log(f"edit {label}", "editor closed")
 
     async def action_refresh(self) -> None:
         self._log("refresh")

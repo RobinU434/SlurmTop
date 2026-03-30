@@ -21,6 +21,16 @@ _STATE_STYLES: dict[str, str] = {
 }
 
 # Deterministic partition colors
+# Color mapping for active job states (applied to Job ID column)
+_ACTIVE_STATE_STYLES: dict[str, str] = {
+    "RUNNING": "green",
+    "PENDING": "yellow",
+    "COMPLETING": "dark_orange",
+    "REQUEUED": "yellow dim",
+    "SUSPENDED": "dim",
+    "PREEMPTED": "yellow dim",
+}
+
 _PARTITION_COLORS = [
     "cyan", "magenta", "yellow", "green", "blue",
     "red", "bright_cyan", "bright_magenta", "bright_green",
@@ -119,12 +129,14 @@ class ActiveJobTable(DataTable):
         new_data: dict[str, tuple] = {}
         for job in bookmarked + rest:
             name = f"★ {job.name}" if job.job_id in self._bookmarked else job.name
+            state_style = _ACTIVE_STATE_STYLES.get(job.state, "")
+            id_text = Text(job.job_id, style=state_style)
             part_text = Text(job.partition, style=_partition_style(job.partition))
-            new_data[job.job_id] = (job.job_id, name, job.elapsed, part_text)
+            new_data[job.job_id] = (id_text, name, job.elapsed, part_text)
 
-        self._apply_diff(new_data, reorder=bool(self._bookmarked))
+        self._apply_diff(new_data)
 
-    def _apply_diff(self, new_data: dict[str, tuple], reorder: bool = False) -> None:
+    def _apply_diff(self, new_data: dict[str, tuple]) -> None:
         existing_keys: set[str] = set()
         for i in range(self.row_count):
             try:
@@ -136,9 +148,11 @@ class ActiveJobTable(DataTable):
                 break
 
         new_keys = set(new_data.keys())
+        added = new_keys - existing_keys
+        removed = existing_keys - new_keys
 
-        # If bookmarks are active we need exact ordering — full rebuild
-        if reorder:
+        # If rows were added or removed, full rebuild to preserve sort order
+        if added or removed:
             old_selected = self.get_selected_job_id()
             self.clear()
             for key, values in new_data.items():
@@ -151,23 +165,15 @@ class ActiveJobTable(DataTable):
                     pass
             return
 
-        for key in existing_keys - new_keys:
-            try:
-                self.remove_row(key)
-            except Exception:
-                pass
-
+        # No structural changes — just update changed cells in place
         for key, values in new_data.items():
-            if key in existing_keys:
-                for col_key, value in zip(self.COLUMNS, values):
-                    try:
-                        current = self.get_cell(key, col_key)
-                        if str(current) != str(value):
-                            self.update_cell(key, col_key, value)
-                    except Exception:
-                        pass
-            else:
-                self.add_row(*values, key=key)
+            for col_key, value in zip(self.COLUMNS, values):
+                try:
+                    current = self.get_cell(key, col_key)
+                    if str(current) != str(value):
+                        self.update_cell(key, col_key, value)
+                except Exception:
+                    pass
 
     def get_selected_job_id(self) -> str | None:
         if self.row_count == 0:
@@ -247,9 +253,9 @@ class CompletedJobTable(DataTable):
             part_text = Text(job.partition, style=_partition_style(job.partition))
             new_data[job.job_id] = (job.job_id, name, state_text, part_text, job.elapsed)
 
-        self._apply_diff(new_data, reorder=bool(self._bookmarked))
+        self._apply_diff(new_data)
 
-    def _apply_diff(self, new_data: dict[str, tuple], reorder: bool = False) -> None:
+    def _apply_diff(self, new_data: dict[str, tuple]) -> None:
         existing_keys: set[str] = set()
         for i in range(self.row_count):
             try:
@@ -261,8 +267,13 @@ class CompletedJobTable(DataTable):
                 break
 
         new_keys = set(new_data.keys())
+        added = new_keys - existing_keys
+        removed = existing_keys - new_keys
 
-        if reorder:
+        # If there are new rows or removed rows, do a full rebuild to
+        # preserve the correct sort order (new rows must appear at top,
+        # not appended at bottom).
+        if added or removed:
             old_selected = self.get_selected_job_id()
             self.clear()
             for key, values in new_data.items():
@@ -275,23 +286,15 @@ class CompletedJobTable(DataTable):
                     pass
             return
 
-        for key in existing_keys - new_keys:
-            try:
-                self.remove_row(key)
-            except Exception:
-                pass
-
+        # No structural changes — just update changed cells in place
         for key, values in new_data.items():
-            if key in existing_keys:
-                for col_key, value in zip(self.COLUMNS, values):
-                    try:
-                        current = self.get_cell(key, col_key)
-                        if str(current) != str(value):
-                            self.update_cell(key, col_key, value)
-                    except Exception:
-                        pass
-            else:
-                self.add_row(*values, key=key)
+            for col_key, value in zip(self.COLUMNS, values):
+                try:
+                    current = self.get_cell(key, col_key)
+                    if str(current) != str(value):
+                        self.update_cell(key, col_key, value)
+                except Exception:
+                    pass
 
     def get_selected_job_id(self) -> str | None:
         if self.row_count == 0:

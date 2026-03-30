@@ -102,6 +102,8 @@ availability.
 | `c` | Cancel the selected job (with confirmation prompt) |
 | `Shift+C` | **Force cancel** — sends SIGKILL immediately, no confirmation |
 | `s` | Resubmit a terminated job using its original sbatch script (with confirmation) |
+| `e` | Open the job's **stdout** log in an external editor (suspends TUI) |
+| `Shift+E` | Open the job's **stderr** log in an external editor |
 | `o` | SSH to the selected job's compute node. Suspends the TUI; type `exit` to return |
 | `r` | Force refresh all job data |
 | `?` | Toggle the help screen (also closes with `Escape`) |
@@ -168,6 +170,17 @@ override colors in the config file (see [Configuration](#configuration)).
 
 ### Color-Coded Job States
 
+**Active Jobs** (Job ID column):
+
+| State | Color |
+|-------|-------|
+| RUNNING | Green |
+| PENDING | Yellow |
+| COMPLETING | Orange |
+| SUSPENDED, REQUEUED | Dim |
+
+**Terminated Jobs** (State column):
+
 | State | Color |
 |-------|-------|
 | COMPLETED | Green |
@@ -197,6 +210,24 @@ Partition format is `name:A/I/O/T`:
 
 Press `m` to bookmark any job. Bookmarked jobs are pinned to the top of their table with
 a ★ prefix. Bookmarks persist for the duration of the session.
+
+### Open Logs in Editor
+
+Press `e` to open the selected job's stdout log in an external text editor, or
+`Shift+E` for stderr. The TUI suspends while the editor is open and resumes when you
+close it.
+
+The default editor is `vim`. To change it, set `editor` in your config file:
+
+```toml
+editor = "nano"    # or "vim", "less", "code", etc.
+```
+
+In **remote mode**, the log file is first copied to a local temp file via `scp`, opened
+in the editor, and cleaned up when the editor closes.
+
+If the configured editor is not found on your system, an error is shown in the Command
+Log (e.g., `editor 'code' not found — set 'editor' in config.toml`).
 
 ### Job Completion Notifications
 
@@ -328,6 +359,7 @@ partition = ""           # -p/--partition: filter by partition (empty = all)
 no_gpu = false           # --no-gpu: disable GPU monitoring tab
 no_live = false          # --no-live: disable live CPU/GPU monitoring
 remote = ""              # -H/--remote: SSH target for remote mode
+editor = "vim"           # text editor for viewing logs ("vim", "nano", "less", etc.)
 
 # Partition display order in the cluster bar.
 # Partitions not listed appear after these in their default order.
