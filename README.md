@@ -54,6 +54,9 @@ slurmtop --remote user@login.hpc.edu
 
 # Customize refresh rate and time window
 slurmtop --refresh 3 --days 14
+
+# Disable auto-refresh (manual refresh only with 'r')
+slurmtop --refresh off
 ```
 
 ## Layout
@@ -77,10 +80,12 @@ availability.
 
 | Key | Action |
 |-----|--------|
-| `Up` / `Down` | Navigate job list (wraps between Active and Terminated) |
+| `Up` / `Down` | Navigate job list (wraps between Active and Terminated). The selected job's details update immediately. |
 | `Tab` / `Shift+Tab` | Switch focus between right-side panels |
 | `Left` / `Right` | Switch focus between right-side panels |
-| `[` / `]` | Switch tabs within the focused panel |
+| `[` / `]` | Switch tabs in the **Job Details** panel (stdout, stderr, cpu, gpu, stats) |
+| `(` / `)` | Switch tabs in the **Job Metadata** panel (Resources, Submission, Raw) |
+| `Escape` | Close search bar |
 
 ### Actions
 
@@ -89,6 +94,7 @@ availability.
 | `/` | Open search bar — filter jobs by ID, name, or partition. Press `Escape` to close and clear |
 | `m` | Bookmark / unbookmark the selected job. Bookmarked jobs show a ★ prefix and are pinned to the top of their table |
 | `c` | Cancel the selected job (with confirmation prompt) |
+| `Shift+C` | **Force cancel** — sends SIGKILL immediately, no confirmation |
 | `s` | Resubmit a terminated job using its original sbatch script (with confirmation) |
 | `o` | SSH to the selected job's compute node. Suspends the TUI; type `exit` to return |
 | `r` | Force refresh all job data |
@@ -97,7 +103,7 @@ availability.
 
 ## Detail Tabs
 
-Select a job in either table and use `[` / `]` to switch between these tabs:
+Select a job in either table (Up/Down) and use `[` / `]` to switch between these tabs:
 
 ### stdout / stderr
 
@@ -129,6 +135,8 @@ Accounting statistics from `sstat` (running jobs) and `sacct`:
 - **Disk I/O** — average and max read/write
 
 ## Metadata Tabs
+
+Use `(` / `)` to switch between these tabs:
 
 ### Resources
 
@@ -279,6 +287,12 @@ transparently tunneled via SSH. Log files are read remotely. The GPU tab uses
 `srun --overlap` on the remote cluster. The SSH-to-node feature (`o`) connects through
 the login node via ProxyJump.
 
+When using `--remote user@host`, the username is automatically used as the default
+`--user` for Slurm queries (no need to specify both).
+
+**Login node warning**: If the local or remote hostname contains "login", SlurmTop shows
+a warning popup reminding you to be mindful of resource usage on shared login nodes.
+
 For best performance, configure SSH connection multiplexing in `~/.ssh/config`:
 
 ```
@@ -301,7 +315,7 @@ or you can create it by hand.
 # CLI arguments always override config file values.
 # When a CLI arg overrides a config value, it is shown in the Command Log.
 
-refresh = 3.0            # -r/--refresh: auto-refresh interval in seconds
+refresh = 3.0            # -r/--refresh: auto-refresh interval in seconds (0 = off)
 days = 14                # -d/--days: how many days back for terminated jobs
 user = "myuser"          # -u/--user: Slurm user to monitor
 partition = ""           # -p/--partition: filter by partition (empty = all)
@@ -355,9 +369,9 @@ slurmtop [-h] [-r SEC] [-d N] [-u USER] [-p PARTITION]
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-r`, `--refresh` | Auto-refresh interval in seconds | 5 |
+| `-r`, `--refresh` | Auto-refresh interval in seconds. Set to `0` or `off` to disable. | 5 |
 | `-d`, `--days` | How many days back to show terminated jobs | 7 |
-| `-u`, `--user` | Slurm user to monitor | `$USER` |
+| `-u`, `--user` | Slurm user to monitor. When `--remote user@host` is used, defaults to the remote username. | `$USER` |
 | `-p`, `--partition` | Filter jobs by partition | (all) |
 | `--no-gpu` | Disable the GPU monitoring tab | off |
 | `--no-live` | Disable live CPU and GPU monitoring (no SSH/srun to nodes) | off |
