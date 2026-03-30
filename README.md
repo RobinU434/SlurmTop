@@ -36,6 +36,13 @@ uv pip install -e .
 pip install -e .
 ```
 
+You can also install the repository directly from remote via: 
+
+```bash
+# Install via pip into local python environment
+pip install git+ssh://git@github.com/RobinU434/SlurmTop.git
+```
+
 ## Quick Start
 
 ```bash
