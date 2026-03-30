@@ -407,13 +407,31 @@ class SlurmTopApp(App):
                 hist["cpu"] = hist["cpu"][-_MAX_HISTORY:]
 
     # ------------------------------------------------------------------
-    # Job selection handling
+    # Job selection handling (debounced)
     # ------------------------------------------------------------------
+
+    _selection_timer: object | None = None
 
     async def on_job_selected(self, message: JobSelected) -> None:
         self._selected_job_id = message.job_id
         self._selected_source = message.source_table
-        await self._load_job_details(message.job_id)
+        # Debounce: cancel any pending load and schedule a new one after 200ms.
+        # This prevents firing subprocess calls on every arrow key press.
+        if self._selection_timer is not None:
+            self._selection_timer.stop()
+        self._selection_timer = self.set_timer(
+            0.2, lambda: self._trigger_load(message.job_id),
+        )
+
+    def _trigger_load(self, job_id: str) -> None:
+        """Start loading job details, cancelling any in-flight load."""
+        # Only load if this is still the selected job (user may have moved on)
+        if self._selected_job_id == job_id:
+            self.run_worker(
+                self._load_job_details(job_id),
+                exclusive=True,  # cancels previous worker
+                group="job_detail",
+            )
 
     async def _load_job_details(self, job_id: str) -> None:
         detail_view = self.query_one("#detail-view", DetailView)
@@ -428,27 +446,28 @@ class SlurmTopApp(App):
 
         self._selected_node = detail.node_list
 
-        tasks = [
+        # Load logs and stats — but NOT live CPU/GPU on selection.
+        # Live monitors are loaded lazily by _refresh_live_monitors when
+        # the user views those tabs, avoiding expensive SSH/srun calls.
+        stdout_content, stderr_content, stats = await asyncio.gather(
             slurm.read_log_file(detail.stdout_path),
             slurm.read_log_file(detail.stderr_path),
             slurm.get_job_stats(job_id),
-        ]
-        if not self.config.no_live:
-            tasks.append(slurm.get_node_processes(self._selected_node, self.config.user))
-            if not self.config.no_gpu:
-                tasks.append(slurm.get_gpu_status(self._selected_node, self._selected_job_id or ""))
+        )
 
-        results = await asyncio.gather(*tasks)
+        # Check we're still on this job (user may have navigated away)
+        if self._selected_job_id != job_id:
+            return
 
-        detail_view.load_stdout(results[0])
-        detail_view.load_stderr(results[1])
-        # Pass sparkline history to stats
+        detail_view.load_stdout(stdout_content)
+        detail_view.load_stderr(stderr_content)
         history = self._resource_history.get(job_id)
-        detail_view.load_stats(results[2], history=history)
-        if not self.config.no_live:
-            detail_view.load_cpu(results[3])
-            if not self.config.no_gpu and len(results) > 4:
-                detail_view.load_gpu(results[4])
+        detail_view.load_stats(stats, history=history)
+        detail_view.load_cpu("[dim]Press \\[r] or wait for auto-refresh[/]")
+        try:
+            detail_view.load_gpu("[dim]Press \\[r] or wait for auto-refresh[/]")
+        except Exception:
+            pass
         metadata_view.load_detail(detail)
 
     # ------------------------------------------------------------------
@@ -660,6 +679,17 @@ class SlurmTopApp(App):
         await self._poll_jobs()
         if self._selected_job_id:
             await self._load_job_details(self._selected_job_id)
+            # Also refresh live monitors on explicit refresh
+            if not self.config.no_live and self._selected_node:
+                detail_view = self.query_one("#detail-view", DetailView)
+                cpu_content, gpu_content = await asyncio.gather(
+                    slurm.get_node_processes(self._selected_node, self.config.user),
+                    slurm.get_gpu_status(self._selected_node, self._selected_job_id or "")
+                    if not self.config.no_gpu else asyncio.sleep(0),
+                )
+                detail_view.load_cpu(cpu_content)
+                if not self.config.no_gpu and isinstance(gpu_content, str):
+                    detail_view.load_gpu(gpu_content)
         self._log("refresh", "complete")
 
     def _log(self, action: str, result: str = "") -> None:
