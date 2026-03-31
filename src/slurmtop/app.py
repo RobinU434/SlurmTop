@@ -18,7 +18,7 @@ from slurmtop import slurm
 from slurmtop.daemon import CacheThread, is_daemon_running
 from slurmtop.models import Config
 from slurmtop.widgets.detail_view import DetailView, parse_mem_bytes
-from slurmtop.widgets.job_table import ActiveJobTable, CompletedJobTable, JobSelected, set_partition_colors
+from slurmtop.widgets.job_table import ActiveJobTable, CompletedJobTable, JobSelected, set_partition_colors, set_display_config
 from slurmtop.widgets.metadata_view import MetadataView
 
 
@@ -257,6 +257,11 @@ class SlurmTopApp(App):
     def on_mount(self) -> None:
         slurm.set_config(self.config)
         set_partition_colors(self.config.partition_colors)
+        set_display_config(
+            max_name=self.config.max_name_width,
+            max_partition=self.config.max_partition_width,
+            abbreviate=self.config.abbreviate_states,
+        )
 
         # Prune old log path cache entries
         from slurmtop import config as persistent_config

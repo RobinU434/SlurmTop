@@ -20,9 +20,9 @@ nodes, cancel or resubmit jobs, and more — all from a single terminal.
 |  2465485  vs     3:22 |  ...                                           |
 +-----------------------+                                                |
 | Terminated Jobs       +------------------------------------------------+
-|  2465400  prep  DONE  | Job Metadata [Resources] [Submission] [Raw]    |
+|  2465400  prep  COMP  | Job Metadata [Resources] [Submission] [Raw]    |
 |  2465312  sweep FAIL  |  Partition: gpu    Nodes: 1   CPUs: 8          |
-|  2465301  test  DONE  |  GPU: gres/gpu:rtx2080ti=1   Memory: 40G      |
+|  2465301  test  COMP  |  GPU: gres/gpu:rtx2080ti=1   Memory: 40G      |
 +-----------------------+------------------------------------------------+
 ```
 
@@ -161,6 +161,36 @@ submit command.
 All key-value pairs from `scontrol show job` or `sacct`, displayed verbatim.
 
 ## Visual Features
+
+### Column Width Limits
+
+Job names and partition names are truncated to 16 characters by default (with `…` when
+truncated). This keeps the tables compact. Configure via `config.toml`:
+
+```toml
+max_name_width = 20       # wider name column
+max_partition_width = 10  # narrower partition column
+```
+
+Set to `0` for unlimited width.
+
+### State Abbreviations
+
+For compact displays, enable abbreviated state names in the Terminated Jobs table:
+
+```toml
+abbreviate_states = true
+```
+
+| Full State | Abbreviation |
+|------------|-------------|
+| COMPLETED | COMP |
+| FAILED | FAIL |
+| TIMEOUT | TIME |
+| CANCELLED | CAN |
+| OUT_OF_MEMORY | OOM |
+| NODE_FAIL | NFAIL |
+| PREEMPTED | PREEMPT |
 
 ### Color-Coded Partitions
 
@@ -360,6 +390,11 @@ no_gpu = false           # --no-gpu: disable GPU monitoring tab
 no_live = false          # --no-live: disable live CPU/GPU monitoring
 remote = ""              # -H/--remote: SSH target for remote mode
 editor = "vim"           # text editor for viewing logs ("vim", "nano", "less", etc.)
+
+# Column display settings
+max_name_width = 16      # max characters for job name column (0 = unlimited)
+max_partition_width = 16 # max characters for partition column (0 = unlimited)
+abbreviate_states = false # use short state names: DONE, FAIL, TIME, CAN, OOM, ...
 
 # Partition display order in the cluster bar.
 # Partitions not listed appear after these in their default order.

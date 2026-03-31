@@ -36,14 +36,53 @@ _PARTITION_COLORS = [
     "red", "bright_cyan", "bright_magenta", "bright_green",
 ]
 
-# Custom overrides loaded from config, set via set_partition_colors()
+# Module-level display settings, set via set_display_config()
 _custom_partition_colors: dict[str, str] = {}
+_max_name_width: int = 16
+_max_partition_width: int = 16
+_abbreviate_states: bool = False
+
+# State abbreviations
+_STATE_ABBREV: dict[str, str] = {
+    "COMPLETED": "COMP",
+    "FAILED": "FAIL",
+    "TIMEOUT": "TIME",
+    "CANCELLED": "CAN",
+    "CANCELLED+": "CAN+",
+    "OUT_OF_MEMORY": "OOM",
+    "NODE_FAIL": "NFAIL",
+    "PREEMPTED": "PREEMPT",
+    "RUNNING": "RUN",
+    "PENDING": "PEND",
+    "COMPLETING": "CG",
+    "SUSPENDED": "SUSP",
+    "REQUEUED": "REQ",
+}
 
 
 def set_partition_colors(colors: dict[str, str] | None) -> None:
     """Set custom partition→color mapping (from config file)."""
     global _custom_partition_colors
     _custom_partition_colors = colors or {}
+
+
+def set_display_config(
+    max_name: int = 16,
+    max_partition: int = 16,
+    abbreviate: bool = False,
+) -> None:
+    """Set column width and abbreviation settings."""
+    global _max_name_width, _max_partition_width, _abbreviate_states
+    _max_name_width = max_name
+    _max_partition_width = max_partition
+    _abbreviate_states = abbreviate
+
+
+def _truncate(text: str, max_width: int) -> str:
+    """Truncate text to max_width, adding … if truncated."""
+    if max_width <= 0 or len(text) <= max_width:
+        return text
+    return text[:max_width - 1] + "…"
 
 
 def _partition_style(partition: str) -> str:
@@ -58,7 +97,49 @@ def _styled_state(state: str) -> Text:
     """Return a Rich Text object with color based on job state."""
     base_state = state.split(" ")[0] if " " in state else state
     style = _STATE_STYLES.get(base_state, "")
-    return Text(state, style=style)
+    display = _STATE_ABBREV.get(base_state, state) if _abbreviate_states else state
+    return Text(display, style=style)
+
+
+def _apply_diff(table: DataTable, new_data: dict[str, tuple]) -> None:
+    """Apply a diff to a DataTable, preserving scroll when only cells change."""
+    existing_keys: set[str] = set()
+    for i in range(table.row_count):
+        try:
+            row_key, _ = table.coordinate_to_cell_key(
+                table.cursor_coordinate._replace(row=i, column=0)
+            )
+            existing_keys.add(str(row_key.value))
+        except Exception:
+            break
+
+    new_keys = set(new_data.keys())
+    added = new_keys - existing_keys
+    removed = existing_keys - new_keys
+
+    # If rows were added or removed, full rebuild to preserve sort order
+    if added or removed:
+        old_selected = table.get_selected_job_id()
+        table.clear()
+        for key, values in new_data.items():
+            table.add_row(*values, key=key)
+        if old_selected and old_selected in new_keys:
+            try:
+                idx = table.get_row_index(old_selected)
+                table.move_cursor(row=idx)
+            except Exception:
+                pass
+        return
+
+    # No structural changes — just update changed cells in place
+    for key, values in new_data.items():
+        for col_key, value in zip(table.COLUMNS, values):
+            try:
+                current = table.get_cell(key, col_key)
+                if str(current) != str(value):
+                    table.update_cell(key, col_key, value)
+            except Exception:
+                pass
 
 
 class JobSelected(Message):
@@ -128,52 +209,17 @@ class ActiveJobTable(DataTable):
 
         new_data: dict[str, tuple] = {}
         for job in bookmarked + rest:
-            name = f"★ {job.name}" if job.job_id in self._bookmarked else job.name
+            prefix = "★ " if job.job_id in self._bookmarked else ""
+            name = _truncate(f"{prefix}{job.name}", _max_name_width)
             state_style = _ACTIVE_STATE_STYLES.get(job.state, "")
             id_text = Text(job.job_id, style=state_style)
-            part_text = Text(job.partition, style=_partition_style(job.partition))
+            part_text = Text(
+                _truncate(job.partition, _max_partition_width),
+                style=_partition_style(job.partition),
+            )
             new_data[job.job_id] = (id_text, name, job.elapsed, part_text)
 
-        self._apply_diff(new_data)
-
-    def _apply_diff(self, new_data: dict[str, tuple]) -> None:
-        existing_keys: set[str] = set()
-        for i in range(self.row_count):
-            try:
-                row_key, _ = self.coordinate_to_cell_key(
-                    self.cursor_coordinate._replace(row=i, column=0)
-                )
-                existing_keys.add(str(row_key.value))
-            except Exception:
-                break
-
-        new_keys = set(new_data.keys())
-        added = new_keys - existing_keys
-        removed = existing_keys - new_keys
-
-        # If rows were added or removed, full rebuild to preserve sort order
-        if added or removed:
-            old_selected = self.get_selected_job_id()
-            self.clear()
-            for key, values in new_data.items():
-                self.add_row(*values, key=key)
-            if old_selected and old_selected in new_keys:
-                try:
-                    idx = self.get_row_index(old_selected)
-                    self.move_cursor(row=idx)
-                except Exception:
-                    pass
-            return
-
-        # No structural changes — just update changed cells in place
-        for key, values in new_data.items():
-            for col_key, value in zip(self.COLUMNS, values):
-                try:
-                    current = self.get_cell(key, col_key)
-                    if str(current) != str(value):
-                        self.update_cell(key, col_key, value)
-                except Exception:
-                    pass
+        _apply_diff(self, new_data)
 
     def get_selected_job_id(self) -> str | None:
         if self.row_count == 0:
@@ -248,53 +294,16 @@ class CompletedJobTable(DataTable):
 
         new_data: dict[str, tuple] = {}
         for job in bookmarked + rest:
-            name = f"★ {job.name}" if job.job_id in self._bookmarked else job.name
+            prefix = "★ " if job.job_id in self._bookmarked else ""
+            name = _truncate(f"{prefix}{job.name}", _max_name_width)
             state_text = _styled_state(job.state)
-            part_text = Text(job.partition, style=_partition_style(job.partition))
+            part_text = Text(
+                _truncate(job.partition, _max_partition_width),
+                style=_partition_style(job.partition),
+            )
             new_data[job.job_id] = (job.job_id, name, state_text, part_text, job.elapsed)
 
-        self._apply_diff(new_data)
-
-    def _apply_diff(self, new_data: dict[str, tuple]) -> None:
-        existing_keys: set[str] = set()
-        for i in range(self.row_count):
-            try:
-                row_key, _ = self.coordinate_to_cell_key(
-                    self.cursor_coordinate._replace(row=i, column=0)
-                )
-                existing_keys.add(str(row_key.value))
-            except Exception:
-                break
-
-        new_keys = set(new_data.keys())
-        added = new_keys - existing_keys
-        removed = existing_keys - new_keys
-
-        # If there are new rows or removed rows, do a full rebuild to
-        # preserve the correct sort order (new rows must appear at top,
-        # not appended at bottom).
-        if added or removed:
-            old_selected = self.get_selected_job_id()
-            self.clear()
-            for key, values in new_data.items():
-                self.add_row(*values, key=key)
-            if old_selected and old_selected in new_keys:
-                try:
-                    idx = self.get_row_index(old_selected)
-                    self.move_cursor(row=idx)
-                except Exception:
-                    pass
-            return
-
-        # No structural changes — just update changed cells in place
-        for key, values in new_data.items():
-            for col_key, value in zip(self.COLUMNS, values):
-                try:
-                    current = self.get_cell(key, col_key)
-                    if str(current) != str(value):
-                        self.update_cell(key, col_key, value)
-                except Exception:
-                    pass
+        _apply_diff(self, new_data)
 
     def get_selected_job_id(self) -> str | None:
         if self.row_count == 0:
