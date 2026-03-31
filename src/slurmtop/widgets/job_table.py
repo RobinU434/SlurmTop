@@ -139,7 +139,9 @@ def _apply_diff(table: DataTable, new_data: dict[str, tuple], force: bool = Fals
         for col_key, value in zip(table.COLUMNS, values):
             try:
                 current = table.get_cell(key, col_key)
-                if str(current) != str(value):
+                # Compare repr to catch style changes (e.g. yellow→green)
+                # str() only compares text content, not Rich styles
+                if repr(current) != repr(value):
                     table.update_cell(key, col_key, value)
             except Exception:
                 pass
