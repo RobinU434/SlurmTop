@@ -105,6 +105,7 @@ availability.
 | `e` | Open the job's **stdout** log in an external editor (suspends TUI) |
 | `Shift+E` | Open the job's **stderr** log in an external editor |
 | `o` | SSH to the selected job's compute node. Suspends the TUI; type `exit` to return |
+| `,` | Edit config file (`~/.config/slurmtop/config.toml`) in your editor |
 | `r` | Force refresh all job data |
 | `?` | Toggle the help screen (also closes with `Escape`) |
 | `q` | Quit |

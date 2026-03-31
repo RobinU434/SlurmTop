@@ -101,7 +101,7 @@ def _styled_state(state: str) -> Text:
     return Text(display, style=style)
 
 
-def _apply_diff(table: DataTable, new_data: dict[str, tuple]) -> None:
+def _apply_diff(table: DataTable, new_data: dict[str, tuple], force: bool = False) -> None:
     """Apply a diff to a DataTable, preserving scroll when only cells change."""
     existing_keys: set[str] = set()
     for i in range(table.row_count):
@@ -117,8 +117,8 @@ def _apply_diff(table: DataTable, new_data: dict[str, tuple]) -> None:
     added = new_keys - existing_keys
     removed = existing_keys - new_keys
 
-    # If rows were added or removed, full rebuild to preserve sort order
-    if added or removed:
+    # Full rebuild when rows changed or force requested (e.g. display settings changed)
+    if added or removed or force:
         old_selected = table.get_selected_job_id()
         table.clear()
         for key, values in new_data.items():
@@ -166,6 +166,7 @@ class ActiveJobTable(DataTable):
         self._all_jobs: list[RunningJob] = []
         self._filter_text: str = ""
         self._bookmarked: set[str] = set()
+        self._force_next: bool = False
 
     def on_mount(self) -> None:
         for col in self.COLUMNS:
@@ -192,6 +193,11 @@ class ActiveJobTable(DataTable):
         self._bookmarked = ids
         self._rebuild()
 
+    def force_rebuild(self) -> None:
+        """Force a full table rebuild (e.g. after display settings change)."""
+        self._force_next = True
+        self._rebuild()
+
     def _rebuild(self) -> None:
         """Rebuild table from _all_jobs, applying filter and bookmark sorting."""
         filtered = self._all_jobs
@@ -203,7 +209,6 @@ class ActiveJobTable(DataTable):
                 or self._filter_text in j.partition.lower()
             ]
 
-        # Sort: bookmarked first, then original order
         bookmarked = [j for j in filtered if j.job_id in self._bookmarked]
         rest = [j for j in filtered if j.job_id not in self._bookmarked]
 
@@ -219,7 +224,9 @@ class ActiveJobTable(DataTable):
             )
             new_data[job.job_id] = (id_text, name, job.elapsed, part_text)
 
-        _apply_diff(self, new_data)
+        force = self._force_next
+        self._force_next = False
+        _apply_diff(self, new_data, force=force)
 
     def get_selected_job_id(self) -> str | None:
         if self.row_count == 0:
@@ -251,6 +258,7 @@ class CompletedJobTable(DataTable):
         self._all_jobs: list[CompletedJob] = []
         self._filter_text: str = ""
         self._bookmarked: set[str] = set()
+        self._force_next: bool = False
 
     def on_mount(self) -> None:
         for col in self.COLUMNS:
@@ -278,6 +286,11 @@ class CompletedJobTable(DataTable):
         self._bookmarked = ids
         self._rebuild()
 
+    def force_rebuild(self) -> None:
+        """Force a full table rebuild (e.g. after display settings change)."""
+        self._force_next = True
+        self._rebuild()
+
     def _rebuild(self) -> None:
         filtered = self._all_jobs
         if self._filter_text:
@@ -303,7 +316,9 @@ class CompletedJobTable(DataTable):
             )
             new_data[job.job_id] = (job.job_id, name, state_text, part_text, job.elapsed)
 
-        _apply_diff(self, new_data)
+        force = self._force_next
+        self._force_next = False
+        _apply_diff(self, new_data, force=force)
 
     def get_selected_job_id(self) -> str | None:
         if self.row_count == 0:

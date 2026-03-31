@@ -69,6 +69,7 @@ class HelpScreen(ModalScreen[None]):
                 "  [bold cyan]e[/]               Open stdout in editor (vim/nano, set in config)\n"
                 "  [bold cyan]Shift+E[/]         Open stderr in editor\n"
                 "  [bold cyan]o[/]               SSH to job's compute node (suspends TUI)\n"
+                "  [bold cyan],[/]               Edit config file (~/.config/slurmtop/config.toml)\n"
                 "  [bold cyan]r[/]               Force refresh all data\n"
                 "  [bold cyan]?[/]               Toggle this help screen\n"
                 "  [bold cyan]q[/]               Quit\n\n"
@@ -195,6 +196,7 @@ class SlurmTopApp(App):
         Binding("o", "ssh_to_node", "SSH", show=True),
         Binding("e", "edit_stdout", "Edit Out", show=True),
         Binding("shift+e", "edit_stderr", "Edit Err", show=False),
+        Binding("comma", "edit_config", "Config", show=True, key_display=","),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("tab", "focus_next_right", "Next Panel", show=False),
         Binding("shift+tab", "focus_prev_right", "Prev Panel", show=False),
@@ -701,6 +703,80 @@ class SlurmTopApp(App):
 
     async def action_edit_stderr(self) -> None:
         await self._open_in_editor(self._stderr_path, "stderr")
+
+    async def action_edit_config(self) -> None:
+        from slurmtop.config import CONFIG_FILE, CONFIG_DIR
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if not CONFIG_FILE.exists():
+            import shutil as _shutil
+            from importlib.resources import files
+            template = files("slurmtop").joinpath("templ", "config.toml")
+            _shutil.copy2(str(template), str(CONFIG_FILE))
+        editor = self.config.editor
+        if shutil.which(editor) is None:
+            self._log("edit config", f"editor '{editor}' not found")
+            return
+        self._log("edit config", str(CONFIG_FILE))
+        with self.suspend():
+            os.system(f"{shlex.quote(editor)} {shlex.quote(str(CONFIG_FILE))}")
+        self._reload_config()
+
+    def _reload_config(self) -> None:
+        """Reload config from disk and apply changes live."""
+        from slurmtop import config as persistent_config
+
+        saved = persistent_config.load()
+        old = self.config
+
+        # Rebuild config from file, preserving CLI-only values (remote, user)
+        self.config = Config(
+            refresh=float(saved.get("refresh", old.refresh)),
+            days=int(saved.get("days", old.days)),
+            user=str(saved.get("user", old.user)),
+            partition=str(saved.get("partition", old.partition)),
+            no_gpu=bool(saved.get("no_gpu", old.no_gpu)),
+            no_live=bool(saved.get("no_live", old.no_live)),
+            remote=str(saved.get("remote", old.remote)),
+            partition_order=saved.get("partition_order", old.partition_order),
+            partition_colors=persistent_config.get_partition_colors() or old.partition_colors,
+            editor=str(saved.get("editor", old.editor)),
+            max_name_width=int(saved.get("max_name_width", old.max_name_width)),
+            max_partition_width=int(saved.get("max_partition_width", old.max_partition_width)),
+            abbreviate_states=bool(saved.get("abbreviate_states", old.abbreviate_states)),
+        )
+
+        # Re-apply module-level settings
+        slurm.set_config(self.config)
+        set_partition_colors(self.config.partition_colors)
+        set_display_config(
+            max_name=self.config.max_name_width,
+            max_partition=self.config.max_partition_width,
+            abbreviate=self.config.abbreviate_states,
+        )
+
+        # Log what changed
+        changes = []
+        for field in (
+            "refresh", "days", "user", "partition", "no_gpu", "no_live",
+            "editor", "max_name_width", "max_partition_width", "abbreviate_states",
+            "partition_order",
+        ):
+            old_val = getattr(old, field)
+            new_val = getattr(self.config, field)
+            if old_val != new_val:
+                changes.append(f"{field}: {old_val} → {new_val}")
+
+        if old.partition_colors != self.config.partition_colors:
+            changes.append("partition_colors updated")
+
+        if changes:
+            for c in changes:
+                self._log("config reloaded", c)
+            # Force full rebuild to recalculate column widths
+            self.query_one("#active-jobs", ActiveJobTable).force_rebuild()
+            self.query_one("#completed-jobs", CompletedJobTable).force_rebuild()
+        else:
+            self._log("config reloaded", "no changes")
 
     async def _open_in_editor(self, path: str | None, label: str) -> None:
         if not path:
