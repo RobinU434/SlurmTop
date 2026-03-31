@@ -120,7 +120,10 @@ def _apply_diff(table: DataTable, new_data: dict[str, tuple], force: bool = Fals
     # Full rebuild when rows changed or force requested (e.g. display settings changed)
     if added or removed or force:
         old_selected = table.get_selected_job_id()
-        table.clear()
+        table.clear(columns=force)  # clear columns too on force to reset widths
+        if force:
+            for col in table.COLUMNS:
+                table.add_column(col, key=col)
         for key, values in new_data.items():
             table.add_row(*values, key=key)
         if old_selected and old_selected in new_keys:
