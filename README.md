@@ -397,6 +397,10 @@ max_name_width = 16      # max characters for job name column (0 = unlimited)
 max_partition_width = 16 # max characters for partition column (0 = unlimited)
 abbreviate_states = false # use short state names: DONE, FAIL, TIME, CAN, OOM, ...
 
+# Cache settings
+# cache_max_age_days = 30  # auto-delete cached job info older than N days
+                           # set to null to never delete (keep forever)
+
 # Partition display order in the cluster bar.
 # Partitions not listed appear after these in their default order.
 # Set via CLI: slurmtop --partition-order gpu,cpu,fat

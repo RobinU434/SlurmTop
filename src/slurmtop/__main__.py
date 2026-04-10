@@ -160,6 +160,8 @@ def main() -> None:
     max_name_width = int(saved.get("max_name_width", 16))
     max_partition_width = int(saved.get("max_partition_width", 16))
     abbreviate_states = bool(saved.get("abbreviate_states", False))
+    raw_cache_age = saved.get("cache_max_age_days", 30)
+    cache_max_age_days = None if raw_cache_age is None else int(raw_cache_age)
 
     config = Config(
         refresh=float(resolved["refresh"]),
@@ -175,6 +177,7 @@ def main() -> None:
         max_name_width=max_name_width,
         max_partition_width=max_partition_width,
         abbreviate_states=abbreviate_states,
+        cache_max_age_days=cache_max_age_days,
     )
 
     from slurmtop.app import SlurmTopApp

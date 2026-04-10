@@ -267,7 +267,7 @@ class SlurmTopApp(App):
 
         # Prune old log path cache entries
         from slurmtop import config as persistent_config
-        persistent_config.prune_log_cache(max_age_days=max(self.config.days, 30))
+        persistent_config.prune_log_cache(max_age_days=self.config.cache_max_age_days)
 
         self.query_one("#active-jobs").border_title = "Active Jobs"
         self.query_one("#completed-jobs").border_title = "Terminated Jobs"
@@ -743,6 +743,7 @@ class SlurmTopApp(App):
             max_name_width=int(saved.get("max_name_width", old.max_name_width)),
             max_partition_width=int(saved.get("max_partition_width", old.max_partition_width)),
             abbreviate_states=bool(saved.get("abbreviate_states", old.abbreviate_states)),
+            cache_max_age_days=saved.get("cache_max_age_days", old.cache_max_age_days),
         )
 
         # Re-apply module-level settings

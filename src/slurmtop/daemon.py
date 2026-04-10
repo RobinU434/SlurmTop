@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from slurmtop.config import CONFIG_DIR, cache_log_paths, prune_log_cache
+from slurmtop.config import CONFIG_DIR, cache_job_paths, prune_log_cache
 
 PID_FILE = CONFIG_DIR / "daemon.pid"
 DEFAULT_INTERVAL = 30  # seconds between polls
@@ -93,16 +93,16 @@ def _poll_and_cache(user: str = "", remote: str = "") -> int:
 
     cached = 0
     for job_id in job_ids:
-        stdout_path, stderr_path = _get_log_paths(job_id, remote)
-        if stdout_path or stderr_path:
-            cache_log_paths(job_id, stdout_path, stderr_path)
+        info = _get_job_paths(job_id, remote)
+        if any(info.values()):
+            cache_job_paths(job_id, **info)
             cached += 1
 
     return cached
 
 
-def _get_log_paths(job_id: str, remote: str = "") -> tuple[str | None, str | None]:
-    """Get StdOut/StdErr from scontrol for a single job."""
+def _get_job_paths(job_id: str, remote: str = "") -> dict[str, str | None]:
+    """Get StdOut/StdErr/Command/WorkDir from scontrol for a single job."""
     cmd = ["scontrol", "show", "job", job_id]
     if remote:
         import shlex
@@ -118,19 +118,28 @@ def _get_log_paths(job_id: str, remote: str = "") -> tuple[str | None, str | Non
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
-            return None, None
+            return {}
     except Exception:
-        return None, None
+        return {}
 
-    stdout_path = None
-    stderr_path = None
+    info: dict[str, str | None] = {
+        "stdout_path": None,
+        "stderr_path": None,
+        "command": None,
+        "work_dir": None,
+    }
     for line in result.stdout.splitlines():
         for token in line.split():
-            if token.startswith("StdOut="):
-                stdout_path = token.split("=", 1)[1]
-            elif token.startswith("StdErr="):
-                stderr_path = token.split("=", 1)[1]
-    return stdout_path, stderr_path
+            key, _, val = token.partition("=")
+            if key == "StdOut":
+                info["stdout_path"] = val
+            elif key == "StdErr":
+                info["stderr_path"] = val
+            elif key in ("Command", "SubmitLine"):
+                info["command"] = val
+            elif key == "WorkDir":
+                info["work_dir"] = val
+    return info
 
 
 # ---------------------------------------------------------------------------

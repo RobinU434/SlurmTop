@@ -223,14 +223,18 @@ async def get_job_detail(job_id: str) -> JobDetail | None:
         raw = _parse_scontrol(stdout)
         stdout_path = raw.get("StdOut")
         stderr_path = raw.get("StdErr")
-        # Cache paths so they survive after the job leaves scontrol
-        persistent_config.cache_log_paths(job_id, stdout_path, stderr_path)
+        command = raw.get("Command", raw.get("SubmitLine"))
+        work_dir = raw.get("WorkDir", "")
+        # Cache all paths so they survive after the job leaves scontrol
+        persistent_config.cache_job_paths(
+            job_id, stdout_path, stderr_path, command, work_dir,
+        )
         return JobDetail(
             job_id=job_id,
             raw=raw,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
-            work_dir=raw.get("WorkDir", ""),
+            work_dir=work_dir,
             source="scontrol",
         )
     return await _get_job_detail_sacct(job_id)
@@ -285,7 +289,7 @@ async def _get_job_detail_sacct(job_id: str) -> JobDetail | None:
         work_dir = raw["WorkDir"]
         job_name = raw["JobName"]
 
-        # First check the persistent cache (paths saved while job was running)
+        # Check the persistent cache (paths saved while job was running)
         from slurmtop import config as persistent_config
         cached_out, cached_err = persistent_config.get_cached_log_paths(job_id)
         if cached_out or cached_err:
@@ -295,6 +299,13 @@ async def _get_job_detail_sacct(job_id: str) -> JobDetail | None:
             # Fall back to guessing from filename patterns
             stdout_path = await _guess_log_path(work_dir, job_id, "out", job_name)
             stderr_path = await _guess_log_path(work_dir, job_id, "err", job_name)
+
+        # Restore cached command/workdir into raw dict if sacct didn't provide them
+        cached_cmd, cached_wd = persistent_config.get_cached_command(job_id)
+        if cached_cmd and "Command" not in raw and "SubmitLine" not in raw:
+            raw["Command"] = cached_cmd
+        if cached_wd and not work_dir:
+            work_dir = cached_wd
 
         # Many clusters merge stdout and stderr into one .out file.
         # If no separate .err file found, fall back to the stdout path.

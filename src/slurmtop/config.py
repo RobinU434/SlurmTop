@@ -90,7 +90,7 @@ def set_partition_colors(colors: dict[str, str]) -> None:
 # ---------------------------------------------------------------------------
 # Log path cache — remembers StdOut/StdErr paths from scontrol
 # ---------------------------------------------------------------------------
-# Format: {"<job_id>": {"stdout": "...", "stderr": "...", "ts": <epoch>}, ...}
+# Format: {"<job_id>": {"stdout": "...", "stderr": "...", "command": "...", "workdir": "...", "ts": <epoch>}, ...}
 
 
 def _load_log_cache() -> dict:
@@ -107,17 +107,33 @@ def _save_log_cache(cache: dict) -> None:
     LOG_CACHE_FILE.write_text(json.dumps(cache))
 
 
-def cache_log_paths(job_id: str, stdout_path: str | None, stderr_path: str | None) -> None:
-    """Store stdout/stderr paths for a job (called when scontrol provides them)."""
-    if not stdout_path and not stderr_path:
+def cache_job_paths(
+    job_id: str,
+    stdout_path: str | None = None,
+    stderr_path: str | None = None,
+    command: str | None = None,
+    work_dir: str | None = None,
+) -> None:
+    """Store paths for a job (called when scontrol provides them)."""
+    if not any((stdout_path, stderr_path, command, work_dir)):
         return
     cache = _load_log_cache()
-    cache[job_id] = {
-        "stdout": stdout_path or "",
-        "stderr": stderr_path or "",
-        "ts": time.time(),
-    }
+    entry = cache.get(job_id, {})
+    if stdout_path:
+        entry["stdout"] = stdout_path
+    if stderr_path:
+        entry["stderr"] = stderr_path
+    if command:
+        entry["command"] = command
+    if work_dir:
+        entry["workdir"] = work_dir
+    entry["ts"] = time.time()
+    cache[job_id] = entry
     _save_log_cache(cache)
+
+
+# Backwards-compatible alias
+cache_log_paths = cache_job_paths
 
 
 def get_cached_log_paths(job_id: str) -> tuple[str | None, str | None]:
@@ -129,8 +145,19 @@ def get_cached_log_paths(job_id: str) -> tuple[str | None, str | None]:
     return entry.get("stdout") or None, entry.get("stderr") or None
 
 
-def prune_log_cache(max_age_days: int = 30) -> None:
-    """Remove cache entries older than max_age_days."""
+def get_cached_command(job_id: str) -> tuple[str | None, str | None]:
+    """Retrieve cached command and workdir for a job. Returns (command, workdir)."""
+    cache = _load_log_cache()
+    entry = cache.get(job_id)
+    if not entry:
+        return None, None
+    return entry.get("command") or None, entry.get("workdir") or None
+
+
+def prune_log_cache(max_age_days: int | None = 30) -> None:
+    """Remove cache entries older than max_age_days. None = never prune."""
+    if max_age_days is None:
+        return
     cache = _load_log_cache()
     cutoff = time.time() - max_age_days * 86400
     pruned = {k: v for k, v in cache.items() if v.get("ts", 0) > cutoff}
