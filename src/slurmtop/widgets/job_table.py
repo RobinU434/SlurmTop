@@ -171,6 +171,7 @@ class ActiveJobTable(DataTable):
         self._all_jobs: list[RunningJob] = []
         self._filter_text: str = ""
         self._bookmarked: set[str] = set()
+        self._multiselected: set[str] = set()
         self._force_next: bool = False
 
     def on_mount(self) -> None:
@@ -198,10 +199,27 @@ class ActiveJobTable(DataTable):
         self._bookmarked = ids
         self._rebuild()
 
+    def set_multiselected(self, ids: set[str]) -> None:
+        self._multiselected = ids
+        self._rebuild()
+
     def force_rebuild(self) -> None:
         """Force a full table rebuild (e.g. after display settings change)."""
         self._force_next = True
         self._rebuild()
+
+    def get_row_order(self) -> list[str]:
+        """Return current row order (job IDs) as they appear in the table."""
+        order: list[str] = []
+        for i in range(self.row_count):
+            try:
+                row_key, _ = self.coordinate_to_cell_key(
+                    self.cursor_coordinate._replace(row=i, column=0)
+                )
+                order.append(str(row_key.value))
+            except Exception:
+                break
+        return order
 
     def _rebuild(self) -> None:
         """Rebuild table from _all_jobs, applying filter and bookmark sorting."""
@@ -219,8 +237,9 @@ class ActiveJobTable(DataTable):
 
         new_data: dict[str, tuple] = {}
         for job in bookmarked + rest:
-            prefix = "★ " if job.job_id in self._bookmarked else ""
-            name = _truncate(f"{prefix}{job.name}", _max_name_width)
+            sel_marker = "◉ " if job.job_id in self._multiselected else ""
+            bm_marker = "★ " if job.job_id in self._bookmarked else ""
+            name = _truncate(f"{sel_marker}{bm_marker}{job.name}", _max_name_width)
             state_style = _ACTIVE_STATE_STYLES.get(job.state, "")
             id_text = Text(job.job_id, style=state_style)
             part_text = Text(
@@ -263,6 +282,7 @@ class CompletedJobTable(DataTable):
         self._all_jobs: list[CompletedJob] = []
         self._filter_text: str = ""
         self._bookmarked: set[str] = set()
+        self._multiselected: set[str] = set()
         self._force_next: bool = False
 
     def on_mount(self) -> None:
@@ -291,10 +311,27 @@ class CompletedJobTable(DataTable):
         self._bookmarked = ids
         self._rebuild()
 
+    def set_multiselected(self, ids: set[str]) -> None:
+        self._multiselected = ids
+        self._rebuild()
+
     def force_rebuild(self) -> None:
         """Force a full table rebuild (e.g. after display settings change)."""
         self._force_next = True
         self._rebuild()
+
+    def get_row_order(self) -> list[str]:
+        """Return current row order (job IDs) as they appear in the table."""
+        order: list[str] = []
+        for i in range(self.row_count):
+            try:
+                row_key, _ = self.coordinate_to_cell_key(
+                    self.cursor_coordinate._replace(row=i, column=0)
+                )
+                order.append(str(row_key.value))
+            except Exception:
+                break
+        return order
 
     def _rebuild(self) -> None:
         filtered = self._all_jobs
@@ -312,8 +349,9 @@ class CompletedJobTable(DataTable):
 
         new_data: dict[str, tuple] = {}
         for job in bookmarked + rest:
-            prefix = "★ " if job.job_id in self._bookmarked else ""
-            name = _truncate(f"{prefix}{job.name}", _max_name_width)
+            sel_marker = "◉ " if job.job_id in self._multiselected else ""
+            bm_marker = "★ " if job.job_id in self._bookmarked else ""
+            name = _truncate(f"{sel_marker}{bm_marker}{job.name}", _max_name_width)
             state_text = _styled_state(job.state)
             part_text = Text(
                 _truncate(job.partition, _max_partition_width),

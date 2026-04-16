@@ -63,8 +63,9 @@ class HelpScreen(ModalScreen[None]):
                 "[bold]Actions[/]\n"
                 "  [bold cyan]/[/]               Search / filter jobs by ID, name, or partition\n"
                 "  [bold cyan]m[/]               Bookmark / unbookmark job (★ pinned to top)\n"
-                "  [bold cyan]c[/]               Cancel selected job (with confirmation)\n"
-                "  [bold cyan]Shift+C[/]         Force cancel job (SIGKILL, no confirmation)\n"
+                "  [bold cyan]c[/]               Cancel selected job(s) (with confirmation)\n"
+                "  [bold cyan]Shift+C[/]         Force cancel job(s) (SIGKILL, no confirmation)\n"
+                "  [bold cyan]Ctrl+V[/]          Toggle multi-select mode (vim-visual)\n"
                 "  [bold cyan]s[/]               Resubmit terminated job (with confirmation)\n"
                 "  [bold cyan]e[/]               Open stdout in editor (vim/nano, set in config)\n"
                 "  [bold cyan]Shift+E[/]         Open stderr in editor\n"
@@ -111,15 +112,21 @@ class ConfirmCancelScreen(ModalScreen[bool]):
     }
     """
 
-    def __init__(self, job_id: str) -> None:
+    def __init__(self, job_ids: str | list[str]) -> None:
         super().__init__()
-        self.job_id = job_id
+        self.job_ids = [job_ids] if isinstance(job_ids, str) else list(job_ids)
 
     def compose(self) -> ComposeResult:
         with Vertical():
+            if len(self.job_ids) == 1:
+                msg = f"[bold red]Cancel job {self.job_ids[0]}?[/]\n\n"
+            else:
+                preview = ", ".join(self.job_ids[:5])
+                if len(self.job_ids) > 5:
+                    preview += f", ... ({len(self.job_ids)} total)"
+                msg = f"[bold red]Cancel {len(self.job_ids)} jobs?[/]\n\n[dim]{preview}[/]\n\n"
             yield Static(
-                f"[bold red]Cancel job {self.job_id}?[/]\n\n"
-                "Press [bold]y[/] to confirm, [bold]n[/] or [bold]Escape[/] to abort."
+                msg + "Press [bold]y[/] to confirm, [bold]n[/] or [bold]Escape[/] to abort."
             )
 
     def action_confirm(self) -> None:
@@ -192,6 +199,7 @@ class SlurmTopApp(App):
         Binding("m", "toggle_bookmark", "Bookmark", show=True),
         Binding("c", "cancel_job", "Cancel", show=True),
         Binding("shift+c", "force_cancel_job", "Force Cancel", show=False),
+        Binding("ctrl+v", "toggle_multiselect", "Multi-select", show=True),
         Binding("s", "resubmit_job", "Resubmit", show=True),
         Binding("o", "ssh_to_node", "SSH", show=True),
         Binding("e", "edit_stdout", "Edit Out", show=True),
@@ -236,6 +244,11 @@ class SlurmTopApp(App):
         # Current job log paths (for editor)
         self._stdout_path: str | None = None
         self._stderr_path: str | None = None
+        # Multi-select state
+        self._multiselect_mode: bool = False
+        self._multiselect_table: str = ""  # "active" or "completed"
+        self._multiselect_anchor: str | None = None  # job_id where visual mode started
+        self._multiselect_ids: set[str] = set()
         # Log path cache thread
         self._cache_thread: CacheThread | None = None
 
@@ -429,15 +442,37 @@ class SlurmTopApp(App):
     _selection_timer: object | None = None
 
     async def on_job_selected(self, message: JobSelected) -> None:
+        # In multi-select mode: extend the selection range from the anchor
+        # to the current cursor position, but do NOT reload details.
+        if self._multiselect_mode and message.source_table == self._multiselect_table:
+            self._update_multiselect_range(message.job_id)
+            return
+
         self._selected_job_id = message.job_id
         self._selected_source = message.source_table
         # Debounce: cancel any pending load and schedule a new one after 200ms.
-        # This prevents firing subprocess calls on every arrow key press.
         if self._selection_timer is not None:
             self._selection_timer.stop()
         self._selection_timer = self.set_timer(
             0.2, lambda: self._trigger_load(message.job_id),
         )
+
+    def _update_multiselect_range(self, current_id: str) -> None:
+        """Compute the selection range from anchor to current cursor."""
+        if self._multiselect_table == "active":
+            table = self.query_one("#active-jobs", ActiveJobTable)
+        else:
+            table = self.query_one("#completed-jobs", CompletedJobTable)
+
+        order = table.get_row_order()
+        if self._multiselect_anchor not in order or current_id not in order:
+            return
+
+        a = order.index(self._multiselect_anchor)
+        b = order.index(current_id)
+        lo, hi = (a, b) if a <= b else (b, a)
+        self._multiselect_ids = set(order[lo:hi + 1])
+        table.set_multiselected(self._multiselect_ids)
 
     def _trigger_load(self, job_id: str) -> None:
         """Start loading job details, cancelling any in-flight load."""
@@ -608,6 +643,15 @@ class SlurmTopApp(App):
         self._help_open = False
 
     def action_cancel_job(self) -> None:
+        # Multi-select: cancel all selected jobs
+        if self._multiselect_mode and self._multiselect_ids:
+            ids = sorted(self._multiselect_ids)
+            self.push_screen(
+                ConfirmCancelScreen(ids),
+                callback=self._on_multi_cancel_confirmed,
+            )
+            return
+
         if self._selected_job_id is None:
             self._set_status("No job selected")
             return
@@ -617,6 +661,17 @@ class SlurmTopApp(App):
         )
 
     async def action_force_cancel_job(self) -> None:
+        # Multi-select: force cancel all selected jobs
+        if self._multiselect_mode and self._multiselect_ids:
+            ids = sorted(self._multiselect_ids)
+            self._log(f"scancel --signal=KILL {len(ids)} jobs")
+            for jid in ids:
+                success, msg = await slurm.cancel_job(jid, force=True)
+                self._log("force cancel", msg)
+            self._exit_multiselect()
+            await self._poll_jobs()
+            return
+
         if self._selected_job_id is None:
             self._set_status("No job selected")
             return
@@ -634,6 +689,58 @@ class SlurmTopApp(App):
         self._log("cancel", msg)
         if success:
             await self._poll_jobs()
+
+    async def _on_multi_cancel_confirmed(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        ids = sorted(self._multiselect_ids)
+        self._log(f"scancel {len(ids)} jobs", ", ".join(ids[:5]) + (" ..." if len(ids) > 5 else ""))
+        for jid in ids:
+            success, msg = await slurm.cancel_job(jid)
+            self._log("cancel", msg)
+        self._exit_multiselect()
+        await self._poll_jobs()
+
+    # ------------------------------------------------------------------
+    # Multi-select mode (Ctrl+V)
+    # ------------------------------------------------------------------
+
+    def action_toggle_multiselect(self) -> None:
+        if self._multiselect_mode:
+            self._exit_multiselect()
+            self._log("multi-select", "disabled")
+            return
+
+        # Determine which table currently has focus
+        active = self.query_one("#active-jobs", ActiveJobTable)
+        completed = self.query_one("#completed-jobs", CompletedJobTable)
+        if active.has_focus:
+            table, table_name = active, "active"
+        elif completed.has_focus:
+            table, table_name = completed, "completed"
+        else:
+            self._set_status("Focus a job table first")
+            return
+
+        anchor = table.get_selected_job_id()
+        if not anchor:
+            self._set_status("No job to anchor selection")
+            return
+
+        self._multiselect_mode = True
+        self._multiselect_table = table_name
+        self._multiselect_anchor = anchor
+        self._multiselect_ids = {anchor}
+        table.set_multiselected(self._multiselect_ids)
+        self._log("multi-select", f"enabled — use Up/Down to extend, 'c' to cancel all, Ctrl+V to exit")
+
+    def _exit_multiselect(self) -> None:
+        self._multiselect_mode = False
+        self._multiselect_anchor = None
+        self._multiselect_ids = set()
+        self.query_one("#active-jobs", ActiveJobTable).set_multiselected(set())
+        self.query_one("#completed-jobs", CompletedJobTable).set_multiselected(set())
+        self._multiselect_table = ""
 
     async def action_resubmit_job(self) -> None:
         if self._selected_job_id is None:
